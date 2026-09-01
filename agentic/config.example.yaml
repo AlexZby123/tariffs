@@ -1,0 +1,67 @@
+# ============================================================
+#  Konfiguracja agentowego klastrowania LLM (Bosch Model Farm)
+# ------------------------------------------------------------
+#  1. Skopiuj ten plik do  config.yaml
+#  2. Wklej swoj token Bosch Model Farm (BMF_API_KEY) w  api_key
+#  3. Wybierz deployment (patrz lista ponizej)
+#  4. Test polaczenia:  python run_clustering.py --check
+#
+#  config.yaml jest w .gitignore (token nie trafi do gita).
+# ============================================================
+
+# provider:
+#   bosch -> Bosch Model Farm (endpoint w stylu Azure OpenAI, auth: Bearer token)
+#   mock  -> BEZ tokenu, offline heurystyka slow-kluczowych (test pipeline)
+provider: bosch
+
+# --- Twoj token Model Farm (naglowek: Authorization: Bearer <token>) ---
+api_key: "PASTE_YOUR_BOSCH_MODEL_FARM_TOKEN_HERE"
+
+# --- Endpoint (wg dokumentacji Model Farm) ---
+base_url: "https://aoai-farm.bosch-temp.com/api"
+api_version: "2025-04-01-preview"
+
+# --- deployment = nazwa deploymentu w URL; model = pole 'model' w ciele zapytania ---
+# Subskrypcja DEVELOPER (gwiazdka w dokumentacji) daje dostep do:
+#   OpenAI GPT-4o mini : deployment=askbosch-prod-farm-openai-gpt-4o-mini-2024-07-18  (model puste)
+#   OpenAI GPT-5 nano  : deployment=gpt-5-nano-2025-08-07                             (model puste)
+#   Gemini 2.5 Flash-Lite: deployment=gemini-2.5-flash-lite   model="google/gemini-2.5-flash-lite"
+#   Gemini 2.0 Flash-Lite: deployment=google-gemini-2-0-flash-lite-001  model="google/gemini-2.0-flash-lite-001"
+# ZALECENIE: Gemini 3.5 Flash - w ablacji (to_cluster vs Rudolf, seed +rb_part_name) najlepszy
+# praktycznie (ARI 0.885; szybki, tani, aktualny). Ranking: GPT-5.5 0.894 (reasoning, wolny) >
+# Gemini 3.5 Flash 0.885 > Gemini 2.5 Flash-Lite/Pro 0.879 (Flash-Lite WYGASA 2026-07-22) >
+# GPT-5 nano 0.785 > GPT-4o mini 0.761. Szczegoly: badania/ABLACJA_CECH.md sekcje 8-9.
+# GPT-5.x / o-series: dodaj reasoning_effort: minimal + max_tokens>=12000 (inaczej pusta/ucieta odpowiedz).
+deployment: "gemini-3.5-flash"
+model: "google/gemini-3.5-flash"   # dla OpenAI (4o mini/GPT-5) ustaw "" (=deployment)
+
+# --- Parametry generacji (klient sam adaptuje: max_completion_tokens / brak temperatury dla GPT-5/o) ---
+temperature: 0.0
+max_tokens: 8000     # Gemini 3.x zwraca gadatliwy JSON; 3000 ucinalo partie po 25
+request_timeout: 90
+max_retries: 5
+
+# --- Sterowanie pipeline ---
+run:
+  limit: null             # None = wszystkie PN; liczba = test na N pierwszych PN
+  batch_size: 25          # ile czesci klasyfikujemy w jednym zapytaniu LLM
+  concurrency: 4          # rownolegle zapytania (uwaga na limity Model Farm)
+  discovery_sample: 180   # ile roznych czesci pokazac agentowi odkrywajacemu taksonomie
+
+taxonomy:
+  # discover        -> agent sam wymysla liste klastrow z danych (uczciwe clustrowanie)
+  # seed_from_rudolf-> uzyj gotowej listy nazw Rudolfa jako taksonomii (tryb klasyfikacji)
+  # fixed_list      -> uzyj listy podanej ponizej w 'labels'
+  mode: discover
+  allow_new: true         # czy klasyfikator moze zaproponowac NOWY klaster
+  labels: []              # uzywane tylko przy mode: fixed_list
+
+features:
+  use_capri: true         # doklej pola z CaPRI (Material Field, RB part name, Part Type) do "part card"
+  # Zestaw pol "part card" widziany przez LLM (patrz agentic/badania/ABLACJA_CECH.md).
+  # W trybie DISCOVER dodanie czystej nazwy czesci z CaPRI (rbname+parttype) pomaga
+  # (to_cluster vs Rudolf: pair_f1 74.8%->79.5%). HS-text / hierarchia / descplus
+  # (opisy z DALI) / "wszystko" POGARSZAJA. descplus (Krok 2) przetestowany = nie pomaga.
+  # Dostepne tokeny: desc, descplus, hs6, hstext, rbname, parttype, hierarchy, material_field, bu.
+  # Puste/brak -> DOMYSLNE_FEATURES z data_prep.py. Nadpisanie z CLI: --features a,b,c
+  part_card: [desc, hs6, rbname, parttype, material_field, bu]

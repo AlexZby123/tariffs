@@ -1,0 +1,10 @@
+# Agentowe klastrowanie LLM (Bosch Model Farm) - rdzen pipeline'u
+openai>=1.30
+PyYAML>=6.0
+pandas>=2.0
+scikit-learn>=1.3
+scipy>=1.10
+openpyxl>=3.1        # zapis/odczyt .xlsx (badania/buduj_excel_roznic.py, etykiety Rudolfa)
+
+# Tylko dla badania/build_descplus.py (pobieranie opisow z bazy DALI przez SQL Server):
+# pyodbc>=5.0
