@@ -1,0 +1,241 @@
+# Tariff Part Clustering & Workflow Studio
+
+Projekt służy do automatycznego klastrowania części motoryzacyjnych i przemysłowych (dla procesów celnych i logistycznych Bosch / Customs & Logistics) z wykorzystaniem agentowego podejścia opartego o modele językowe (LLM) z platformy **Bosch Model Farm** oraz interfejsu graficznego (**Workflow UI**).
+
+---
+
+## 📌 Spis treści
+1. [Przegląd projektu i cel](#przegląd-projektu-i-cel)
+2. [Struktura repozytorium](#struktura-repozytorium)
+3. [Architektura agentowa (`agentic/`)](#architektura-agentowa-agentic)
+4. [Ewaluacja i metryki (`evaluate.py`)](#ewaluacja-i-metryki-evaluatepy)
+5. [Interfejs graficzny (`workflow-ui/`)](#interfejs-graficzny-workflow-ui)
+6. [Środowisko i zależności](#środowisko-i-zależności)
+7. [Konfiguracja (`config.yaml`)](#konfiguracja-configyaml)
+8. [Uruchamianie z CLI](#uruchamianie-z-cli)
+9. [Ściąga dla agentów AI / wznowienia sesji](#ściąga-dla-agentów-ai--wznowienia-sesji)
+
+---
+
+## 🎯 Przegląd projektu i cel
+
+Celem systemu jest pogrupowanie dziesiątek tysięcy rekordów części w spójne, grube **typy funkcjonalne** (np. `BALL`, `SENSOR`, `SEAL`, `SCREW`, `MOTOR`, `SPRING`, `FILTER`, `BEARING`, `PISTON`).
+
+### Główne zasady domeny:
+- **Klaster = typ funkcjonalny części** (czym ta część fizycznie i funkcjonalnie jest, a nie z czego została wykonana).
+- **Główny sygnał = opis materiałowy (`MATDESC`)**: LLM wnioskuje na podstawie wiedzy dziedzinowej o produktach.
+- **Kody celne (HS Code) i pole materiałowe (Material Field)** opisują surowiec/materiał (np. guma, stal, aluminium) i stanowią jedynie informację pomocniczą.
+- **Deduplikacja do poziomu Product Number (PN)**: Części deduplikowane są per PN (`Product Number ACDC`), klasyfikowane tylko raz na PN, po czym wynik propagowany jest na wszystkie wiersze rekordu. Ogranicza to liczbę zapytań do LLM i drastycznie redukuje koszty.
+- **Punkt odniesienia (Ground Truth)**: Wyniki porównywane są z eksperckim podziałem "Rudolfa" (zbiór `to_cluster_rudolf.xlsx` lub kolumna `Cluster NAME` w `cla.csv`).
+
+---
+
+## 📂 Struktura repozytorium
+
+```text
+tariff/
+├── README.md                      <- Ten plik (kompletny przewodnik po projekcie)
+├── search_agent/                  <- Moduł ekstrakcji i normalizacji wymiarów i wagi części
+│   ├── models.py                  <- Modele Pydantic (ProductQuery, MetricDimensions)
+│   ├── normalizer.py              <- Silnik konwersji jednostek (in, lbs -> mm, g, kg)
+│   ├── search_provider.py         <- Pobieranie kart katalogowych (Web, Mock, Cache)
+│   ├── extractor_agent.py         <- Agent LLM / Heurystyka ekstrakcji wymiarów
+│   ├── pipeline.py                <- Orkiestrator workflow (pojedynczy i batch)
+│   ├── cli.py                     <- Interfejs wiersza poleceń CLI
+│   └── test_agent.py              <- Testy jednostkowe i integracyjne
+├── agentic/                       <- Pipeline klastrowania agentowego w Pythonie
+│   ├── agents.py                  <- Agenci LLM: Discovery, Consolidation, Classifier
+│   ├── config.example.yaml        <- Wzór konfiguracji (endpointy, modele, tokeny)
+│   ├── data_prep.py               <- Wczytywanie danych, deduplikacja PN, budowa "part card"
+│   ├── evaluate.py                <- Ewaluacja (ARI, NMI, Hungarian, metryki parowe bez względu na nazwy)
+│   ├── llm_client.py              <- Klient Bosch Model Farm (Azure OpenAI spec) + tryb mock offline
+│   ├── requirements.txt           <- Zależności Pythona
+│   └── run_clustering.py          <- Główny orkiestrator CLI (batching, cache, wielowątkowość)
+└── workflow-ui/                   <- Panel sterowania i monitorowania w Next.js
+    ├── package.json               <- Zależności Node.js (Next 16, React 19, Tailwind 4)
+    ├── src/
+    │   ├── app/
+    │   │   ├── api/run/route.ts      <- API uruchamiania procesu pythonowego i stanu
+    │   │   ├── api/workflow/route.ts <- API odczytu/zapisu config.yaml (maskowanie tokenu)
+    │   │   ├── page.tsx              <- Główny widok kokpitu (konfiguracja + konsola live)
+    │   │   ├── layout.tsx            <- Layout aplikacji
+    │   │   └── globals.css           <- Style CSS
+    │   └── lib/
+    │       └── workflow.ts           <- Logika zarządzania procesami i plikiem config.yaml
+    └── tsconfig.json
+```
+
+---
+
+## 🤖 Architektura agentowa (`agentic/`)
+
+System opiera się na 3 współpracujących rolach agentowych zdefiniowanych w `agentic/agents.py`:
+
+```
+   [Próbka danych PN]
+           │
+           ▼
+┌────────────────────────────────────────┐
+│ 1. Agent Odkrywający (Discovery)       │ -> Proponuje klastry z porcji próbek (np. 40-90 typów)
+└────────────────────────────────────────┘
+           │
+           ▼
+┌────────────────────────────────────────┐
+│ 2. Agent Konsolidujący (Consolidation) │ -> Scala synonimy (np. BOLTS + SCREWS), usuwa duplikaty
+└────────────────────────────────────────┘
+           │
+           ▼ [Czysta Taksonomia]
+┌────────────────────────────────────────┐
+│ 3. Agent Klasyfikujący (Classifier)    │ -> Przypisuje partiami (np. po 25) każdy PN do klastra
+└────────────────────────────────────────┘    (Opcjonalnie: NEW: <name> lub klasyfikacja z pewnością)
+```
+
+### Tryby pracy taksonomii (`taxonomy.mode`):
+1. `discover`: Agent sam odkrywa i konsoliduje taksonomię na podstawie próbki (czysty nienadzorowany clustering).
+2. `seed_from_rudolf`: Użycie gotowej listy unikatowych klastrów Rudolfa jako taksonomii wyjściowej (klasyfikacja nadzorowana).
+3. `fixed_list`: Ręcznie podana lista klastrów w konfiguracji.
+
+### Reprezentacja części ("Part Card"):
+Funkcja `part_card()` w `data_prep.py` formuje zwarty rekord tekstowy dla modelu:
+- `desc="..."` – skonsolidowane opisy materiałowe (kluczowy sygnał),
+- `hs6=...` oraz `hs_text=...` – kod i opis taryfy celnej,
+- `part_name="..."`, `part_type="..."`, `material_field="..."` – dane pobrane z CaPRI,
+- `bu=...` – jednostka biznesowa.
+
+---
+
+## 📊 Ewaluacja i metryki (`evaluate.py`)
+
+Podczas ewaluacji **nazwy klastrów są ignorowane** – sprawdzana jest wyłącznie jakość grupowania rekordów:
+- Wszystkie klastry modelu są mapowane na identyfikatory literowe `A, B, C, ...` wg liczby przypisanych rekordów.
+- **Współprzynależność par (Pair Metrics)**:
+  - `pair_precision`: ile par połączonych przez model jest rzeczywiście razem w ground-truth.
+  - `pair_recall`: ile par z ground-truth model utrzymał razem.
+  - `pair_f1`: średnia harmoniczna precyzji i pełności par.
+  - `rand_index` oraz `ARI` (Adjusted Rand Index).
+- **Metryki informacyjne**: NMI, V-measure, Homogeneity, Completeness.
+- **Zgodność Hungarian**: Optymalne przyporządkowanie 1:1 za pomocą algorytmu węgierskiego (`linear_sum_assignment`).
+
+Wyniki zapisywane są w katalogu `agentic/wyniki/<data_czas>_<provider>/`:
+- `klastry_per_PN.csv` – przypisanie per numer części,
+- `klastry_per_wiersz.csv` – zmapowane rekordy źródłowe,
+- `legenda_klastrow.csv` – mapowanie identyfikatora literowego na nazwę i liczność,
+- `ewaluacja.txt` – kompletny raport liczbowy,
+- `ewaluacja_rudolf_do_llm.csv` – analiza rozbicia poszczególnych grup referencyjnych.
+
+---
+
+## 🖥️ Interfejs graficzny (`workflow-ui/`)
+
+Aplikacja oparta o **Next.js 16 (App Router)** pozwala na pełną kontrolę z poziomu przeglądarki:
+- **Zarządzanie konfiguracją**: Edycja parametrów modelu, temperatury, limitu tokenów, trybu taksonomii oraz aktywnych pól "part card".
+- **Bezpieczeństwo**: Token `api_key` nie jest wysyłany do przeglądarki (oznaczany jedynie jako boolean `hasApiKey`).
+- **Uruchamianie i podgląd na żywo**: Wyzwalanie skryptu Pythona w tle (`child_process.spawn`) oraz streaming ostatnich 300 linii logów w oknie konsoli.
+
+---
+
+## ⚙️ Środowisko i zależności
+
+### Python:
+Wymagany Python 3.10+ oraz biblioteki:
+```bash
+pip install -r agentic/requirements.txt
+```
+> [!NOTE]
+> Na tej maszynie w pełni skonfigurowane środowisko conda zawierające wszystkie pakiety (`openai`, `pandas`, `scikit-learn`, `scipy`, `openpyxl`, `pyyaml`) to:
+> `C:\Users\ZBA1WZ\.conda\envs\pandas_excel\python.exe`
+
+### Node.js:
+Wymagany Node.js v20+ (na maszynie zainstalowany v24.16.0):
+```bash
+cd workflow-ui
+npm install
+```
+
+---
+
+## 🔧 Konfiguracja (`config.yaml`)
+
+Aby uruchomić pipeline, w katalogu `agentic/` należy utworzyć plik `config.yaml` (na bazie `config.example.yaml`):
+
+```yaml
+provider: bosch # 'bosch' (Model Farm) lub 'mock' (offline bez tokenu)
+api_key: "TWÓJ_TOKEN_BOSCH_MODEL_FARM"
+base_url: "https://aoai-farm.bosch-temp.com/api"
+api_version: "2025-04-01-preview"
+
+# Rekomendowany model: Gemini 3.5 Flash (szybki, tani, wysokie ARI ~0.885)
+deployment: "gemini-3.5-flash"
+model: "google/gemini-3.5-flash" # Dla OpenAI puste ""
+
+temperature: 0.0
+max_tokens: 8000
+request_timeout: 90
+max_retries: 5
+
+run:
+  limit: null            # Ograniczenie liczby PN do testów (null = całość)
+  batch_size: 25         # Liczba części w jednym zapytaniu
+  concurrency: 4         # Liczba równoległych wątków
+  discovery_sample: 180  # Liczba PN do próbki odkrywania taksonomii
+
+taxonomy:
+  mode: discover         # discover | seed_from_rudolf | fixed_list
+  allow_new: true
+
+features:
+  use_capri: true
+  part_card: [desc, hs6, rbname, parttype, material_field, bu]
+```
+
+---
+
+## 🚀 Uruchamianie z CLI
+
+Wszystkie polecenia uruchamiamy z katalogu `agentic/` (z aktywnym środowiskiem Pythona):
+
+```bash
+cd agentic
+
+# 1. Test połączenia z Bosch Model Farm
+python run_clustering.py --check
+
+# 2. Test na małej próbce (np. 60 PN, tanio i szybko)
+python run_clustering.py --limit 60
+
+# 3. Test z ewaluacją na N wierszach danych źródłowych
+python run_clustering.py --rows 200
+
+# 4. Uruchomienie na pełnym zbiorze
+python run_clustering.py
+
+# 5. Nadpisanie trybu taksonomii z wiersza poleceń
+python run_clustering.py --taxonomy seed_from_rudolf --no-new
+
+# 6. Ponowna ewaluacja istniejącego pliku z wynikami
+python evaluate.py wyniki/<folder>/klastry_per_wiersz.csv
+```
+
+### Uruchomienie UI:
+```bash
+cd workflow-ui
+npm run dev
+```
+Interfejs dostępny jest pod adresem: `http://localhost:3000`.
+
+---
+
+## 🧠 Ściąga dla agentów AI / wznowienia sesji
+
+W razie ponownego uruchomienia asystenta AI w tym projekcie:
+1. **Lokalizacja repozytorium**: `C:\Users\ZBA1WZ\Documents\clustering_vm\tariff`.
+2. **Interpreter Pythona**:
+   - Domyślny Anaconda base nie ma `pandas` i `openai`.
+   - Środowisko z kompletem zainstalowanych pakietów ML to: `C:\Users\ZBA1WZ\.conda\envs\pandas_excel\python.exe`.
+   - W `workflow-ui/src/lib/workflow.ts` można ustawić zmienną środowiskową `PYTHON_EXECUTABLE="C:\\Users\\ZBA1WZ\\.conda\\envs\\pandas_excel\\python.exe"`.
+3. **Klucze i autoryzacja**:
+   - Tokeny API nie są commitowane w gicie (są w `agentic/config.yaml`).
+   - Bosch Model Farm używa nagłówka `Authorization: Bearer <token>` z endpointem w stylu Azure OpenAI.
+4. **Dane wejściowe**:
+   - Skrypty oczekują plików w katalogach nadrzędnych: `../data_to_cluster/to_cluster.csv` (lub `../cla.csv`) oraz opcjonalnych plików cache CaPRI w `../wyniki_to_cluster/`.
+   - Jeśli danych brakuje lub testowany jest wyłącznie przepływ logiki/UI, należy użyć konfiguracji `provider: mock`.

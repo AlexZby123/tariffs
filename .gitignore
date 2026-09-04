@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.conda/
+
+# Project caches and configs
+agentic/config.yaml
+agentic/cache/
+agentic/wyniki/
+search_agent/cache/
+
+# Node
+workflow-ui/node_modules/
+workflow-ui/.next/
+workflow-ui/out/
+
+# OS
+.DS_Store
+Thumbs.db
