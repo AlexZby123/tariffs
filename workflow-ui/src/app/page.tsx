@@ -4,13 +4,16 @@ import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   CircleDashed,
+  Cloud,
   Cpu,
+  HardDrive,
   Play,
   Save,
   SlidersHorizontal,
   Terminal,
   XCircle,
 } from "lucide-react";
+import LocalPanel from "./LocalPanel";
 
 type Config = {
   provider: string;
@@ -44,22 +47,58 @@ const featureOptions = [
   "hierarchy",
 ];
 
+function Tabs({
+  tab,
+  setTab,
+}: {
+  tab: "chmura" | "lokalne";
+  setTab: (t: "chmura" | "lokalne") => void;
+}) {
+  return (
+    <nav className="tabs">
+      <button
+        className={tab === "lokalne" ? "tab active" : "tab"}
+        onClick={() => setTab("lokalne")}
+      >
+        <HardDrive size={16} /> Lokalne (hybryda)
+      </button>
+      <button
+        className={tab === "chmura" ? "tab active" : "tab"}
+        onClick={() => setTab("chmura")}
+      >
+        <Cloud size={16} /> Chmurowe (agenci LLM)
+      </button>
+    </nav>
+  );
+}
+
 export default function Home() {
   const [config, setConfig] = useState<Config | null>(null);
   const [run, setRun] = useState<RunState>({ state: "idle", output: [] });
   const [notice, setNotice] = useState("");
   const [dataset, setDataset] = useState<"to_cluster" | "cla">("to_cluster");
   const [limit, setLimit] = useState(60);
+  const [tab, setTab] = useState<"chmura" | "lokalne">("lokalne");
 
   useEffect(() => {
     let cancelled = false;
     void fetch("/api/workflow")
-      .then((response) => response.json())
+      .then(async (response) => {
+        // 500 = brak agentic/config.yaml. Body jest wtedy {error: ...}, ktore
+        // jest truthy - wpisane do config wywracalo cala strone. Tor lokalny
+        // nie potrzebuje tej konfiguracji, wiec zostawiamy config=null.
+        if (!response.ok) throw new Error(String((await response.json())?.error));
+        return response.json();
+      })
       .then((data) => {
         if (!cancelled) setConfig(data);
       })
       .catch(() => {
-        if (!cancelled) setNotice("Unable to load configuration.");
+        if (!cancelled)
+          setNotice(
+            "Brak agentic/config.yaml - tor chmurowy nieaktywny. " +
+              "Skopiuj config.example.yaml, aby go wlaczyc. Tor lokalny dziala bez niego.",
+          );
       });
     return () => {
       cancelled = true;
@@ -109,8 +148,21 @@ export default function Home() {
 
   if (!config)
     return (
-      <main className="loading">
-        <CircleDashed className="spin" /> Loading workflow control panel...
+      <main className="shell">
+        <Tabs tab={tab} setTab={setTab} />
+        {notice && <div className="notice">{notice}</div>}
+        {tab === "lokalne" ? (
+          <LocalPanel />
+        ) : (
+          <p className="loading">
+            <CircleDashed className="spin" /> Wczytywanie konfiguracji chmurowej…
+            <br />
+            <small>
+              Tor chmurowy wymaga agentic/config.yaml (skopiuj z
+              config.example.yaml). Tor lokalny działa bez niego.
+            </small>
+          </p>
+        )}
       </main>
     );
   const statusIcon =
@@ -137,17 +189,23 @@ export default function Home() {
       <section className="title-row">
         <div>
           <p className="eyebrow">WORKFLOW CONTROL</p>
-          <h1>Agentic part clustering</h1>
+          <h1>Klastrowanie części</h1>
           <p className="subtitle">
-            Configure taxonomy, data context, and agent execution settings.
+            {tab === "lokalne"
+              ? "Tor lokalny: bez chmury, bez tokenów. Przypnij część do klastra, a model się na tym nauczy."
+              : "Tor chmurowy: taksonomia, kontekst danych i ustawienia agentów."}
           </p>
         </div>
-        <button className="primary" onClick={save}>
-          <Save size={17} /> Save changes
-        </button>
+        {tab === "chmura" && (
+          <button className="primary" onClick={save}>
+            <Save size={17} /> Zapisz zmiany
+          </button>
+        )}
       </section>
-      {notice && <div className="notice">{notice}</div>}
-      <div className="workspace">
+      <Tabs tab={tab} setTab={setTab} />
+      {tab === "lokalne" && <LocalPanel />}
+      {notice && tab === "chmura" && <div className="notice">{notice}</div>}
+      <div className="workspace" hidden={tab !== "chmura"}>
         <section className="settings">
           <div className="section-head">
             <SlidersHorizontal size={18} />

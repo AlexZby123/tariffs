@@ -17,9 +17,11 @@ modelu na danych, na ktorych sie uczyl.
 from __future__ import annotations
 
 import argparse
+import json
 import warnings
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -33,6 +35,9 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 KATALOG = Path(__file__).parent
 WYNIKI_DIR = KATALOG / "wyniki"
+#: Stala sciezka z ostatnim wynikiem - stad czyta workflow-ui (nie musi
+#: zgadywac nazwy katalogu z timestampem ani parsowac CSV).
+OSTATNI_JSON = WYNIKI_DIR / "_ostatni_lokalny.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -82,6 +87,12 @@ def raport_oof(model: lc.HybrydowyKlasyfikator) -> dict:
     met["trafnosc"] = float((pred[maska] == y[maska]).mean())
     met["n_ocenianych"] = int(maska.sum())
     return met
+
+
+def raport_oof_z_modelu(model: lc.HybrydowyKlasyfikator) -> dict:
+    """Metryki OOF dla modelu wczytanego z dysku (surowe tablice nie sa zapisywane)."""
+    d = model.diagnostyka
+    return {"trafnosc": d.trafnosc_oof, "n_ocenianych": d.n_treningowych}
 
 
 def raport_nienadzorowany(model: lc.HybrydowyKlasyfikator, pn_df: pd.DataFrame,
@@ -220,6 +231,78 @@ def zapisz_wyniki(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
     return {}
 
 
+def zapisz_json(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
+                model: lc.HybrydowyKlasyfikator, oof: dict, args,
+                sim: Optional[dict] = None) -> Path:
+    """Zapisuje wynik w formacie czytanym przez workflow-ui.
+
+    Trafia w dwa miejsca: do katalogu przebiegu (archiwum) i pod stala sciezke
+    OSTATNI_JSON, ktora UI odpytuje bez znajomosci timestampu.
+    """
+    d = model.diagnostyka
+    wiersze_na_pn = (rekordy.groupby(rekordy[dp.PN_KOL].astype(str)).size().to_dict()
+                     if dp.PN_KOL in rekordy.columns else {})
+
+    czesci = []
+    for _, r in wynik_pn.iterrows():
+        pn = str(r["PN"])
+        czesci.append({
+            "pn": pn,
+            "opis": str(r.get("MATDESC", ""))[:300],
+            "klaster": str(r["cluster_name"]),
+            "zrodlo": str(r["zrodlo"]),
+            "pewnosc": round(float(r["pewnosc"]), 4),
+            "hs6": str(r.get("HS6", "")),
+            "bu": str(r.get("BU", "")),
+            "n_wierszy": int(wiersze_na_pn.get(pn, 0)),
+        })
+
+    agg = (wynik_pn.groupby("cluster_name")
+           .agg(n_pn=("PN", "size"), pewnosc_srednia=("pewnosc", "mean"))
+           .reset_index())
+    zrodla_na_klaster = (wynik_pn.groupby(["cluster_name", "zrodlo"]).size()
+                         .unstack(fill_value=0).to_dict(orient="index"))
+    klastry = [{
+        "nazwa": str(r["cluster_name"]),
+        "n_pn": int(r["n_pn"]),
+        "n_wierszy": int(sum(wiersze_na_pn.get(c["pn"], 0) for c in czesci
+                             if c["klaster"] == r["cluster_name"])),
+        "pewnosc_srednia": round(float(r["pewnosc_srednia"]), 4),
+        "zrodla": {k: int(v) for k, v in zrodla_na_klaster.get(r["cluster_name"], {}).items()},
+        "propozycja": str(r["cluster_name"]).startswith(naming.PREFIKS_PROPOZYCJI)
+                      or str(r["cluster_name"]).startswith(lc.PREFIKS_NOWY),
+    } for _, r in agg.sort_values("n_pn", ascending=False).iterrows()]
+
+    dane = {
+        "wygenerowano": datetime.now().isoformat(timespec="seconds"),
+        "katalog": out.name,
+        "enkoder": model.cfg.encoder,
+        "nazywanie": args.nazywaj,
+        "taksonomia": sorted(str(k) for k in model.klasy_),
+        "metryki": {
+            "trafnosc_oof": round(oof.get("trafnosc", 0.0), 4),
+            "ari": round(oof.get("ari", 0.0), 4),
+            "pair_f1": round(oof.get("pair_f1", 0.0), 4),
+            "nmi": round(oof.get("nmi", 0.0), 4),
+            "n_ocenianych": int(oof.get("n_ocenianych", 0)),
+            "prog_pewnosci": round(d.prog_pewnosci, 4),
+            "udzial_przyjetych": round(d.udzial_przyjetych, 4),
+            "trafnosc_przyjetych": round(d.trafnosc_przyjetych, 4),
+            "n_klas": d.n_klas,
+            "cel_trafnosci": model.cfg.cel_trafnosci,
+        },
+        "symulacja": {k: v for k, v in (sim or {}).items() if not k.startswith("_")},
+        "klastry": klastry,
+        "czesci": czesci,
+        "etykieta_przegladu": lc.ETYKIETA_PRZEGLAD,
+    }
+    tresc = json.dumps(dane, ensure_ascii=False, indent=1)
+    (out / "wynik.json").write_text(tresc, encoding="utf-8")
+    OSTATNI_JSON.parent.mkdir(parents=True, exist_ok=True)
+    OSTATNI_JSON.write_text(tresc, encoding="utf-8")
+    return OSTATNI_JSON
+
+
 # --------------------------------------------------------------------------- #
 #  CLI
 # --------------------------------------------------------------------------- #
@@ -304,6 +387,7 @@ def main() -> None:
         wynik_pn = nazwij_odkryte(model, model.predict(pn_df), args.nazywaj)
         out = WYNIKI_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_local_predict"
         zapisz_wyniki(out, wynik_pn, rekordy, rudolf)
+        zapisz_json(out, wynik_pn, rekordy, model, raport_oof_z_modelu(model), args)
         print(f"  Wyniki -> {out.relative_to(KATALOG)}")
         return
 
@@ -354,6 +438,7 @@ def main() -> None:
 
     out = WYNIKI_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_local_{cfg.encoder.replace(':', '-')}"
     met_wiersze = zapisz_wyniki(out, wynik_pn, rekordy, rudolf)
+    zapisz_json(out, wynik_pn, rekordy, model, oof, args, sim)
     model.zapisz()
 
     zapisz_podsumowanie(out / "podsumowanie.txt", cfg, model, oof, tabela, sim,

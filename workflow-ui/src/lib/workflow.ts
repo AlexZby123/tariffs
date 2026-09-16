@@ -4,14 +4,19 @@ import fsSync from "fs";
 import path from "path";
 import { load, dump } from "js-yaml";
 
-const agenticDir = path.resolve(process.cwd(), "..", "agentic");
+export const agenticDir = path.resolve(process.cwd(), "..", "agentic");
 const configPath = path.join(agenticDir, "config.yaml");
 const anacondaPython = "C:\\Program Files\\Anaconda3\\python.exe";
 
-function resolvePythonCommand(): string {
+export function resolvePythonCommand(): string {
   if (process.env.PYTHON_EXECUTABLE) return process.env.PYTHON_EXECUTABLE;
   if (process.platform === "win32" && fsSync.existsSync(anacondaPython))
     return anacondaPython;
+  if (process.platform !== "win32") {
+    // na wielu Linuksach/macOS istnieje tylko 'python3'
+    for (const kandydat of ["/usr/local/bin/python3", "/usr/bin/python3"])
+      if (fsSync.existsSync(kandydat)) return kandydat;
+  }
   return "python";
 }
 

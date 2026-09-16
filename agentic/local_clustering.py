@@ -171,7 +171,11 @@ class KonfiguracjaHybrydy:
     """Grupy mniejsze niz tyle PN dostaja etykiete DO_PRZEGLADU zamiast NOWY_n."""
 
     min_probek_klasy: int = 2
-    """Klasy o mniejszej licznosci nie wchodza do treningu warstwy 1."""
+    """Klasy o mniejszej licznosci nie wchodza do treningu warstwy 1.
+
+    Nie dotyczy klas pochodzacych z overrides.yaml - decyzja eksperta wchodzi
+    do treningu zawsze, nawet jako jedyny przyklad swojej klasy.
+    """
 
     C: float = 1.0
     """Regularyzacja LinearSVC."""
@@ -312,16 +316,25 @@ class HybrydowyKlasyfikator:
 
         # WARSTWA 0 wchodzi do treningu (feedback loop)
         overrides = load_overrides()
+        z_override = np.zeros(len(df), dtype=bool)
         if overrides and "PN" in df.columns:
             trafione = df["PN"].astype(str).map(overrides)
-            ma = trafione.notna().values
-            y[ma] = trafione[ma].values
-            if verbose and ma.sum():
-                print(f"  [warstwa 0] {int(ma.sum())} PN z overrides.yaml wlaczonych do treningu")
+            z_override = trafione.notna().values
+            y[z_override] = trafione[z_override].values
+            if verbose and z_override.sum():
+                print(f"  [warstwa 0] {int(z_override.sum())} PN z overrides.yaml "
+                      f"wlaczonych do treningu")
 
-        # klasy zbyt rzadkie, by czegokolwiek nauczyc
+        # Klasy zbyt rzadkie, by czegokolwiek nauczyc - ALE decyzja eksperta
+        # zawsze wchodzi do treningu, nawet jako jedyny przyklad swojej klasy.
+        # Inaczej przypiecie czesci do NOWEGO klastra nie nauczyloby modelu
+        # niczego: override dzialalby tylko dla tego jednego PN, a podobne
+        # czesci nadal ladowalyby gdzie indziej. Klasy z override'ow sa tez
+        # chronione w calosci - zeby ich pozostale przyklady nie wypadly.
+        klasy_eksperta = set(y[z_override])
         licznosc = pd.Series(y).value_counts()
-        dosc = np.array([licznosc[v] >= cfg.min_probek_klasy for v in y])
+        dosc = np.array([licznosc[v] >= cfg.min_probek_klasy or v in klasy_eksperta
+                         for v in y])
         if dosc.sum() < len(y) and verbose:
             print(f"  [warstwa 1] pomijam {int((~dosc).sum())} PN z klas o licznosci "
                   f"< {cfg.min_probek_klasy}")

@@ -159,6 +159,29 @@ zadanie nazywania offline.
 | jakość grupowania nowych typów (pair_precision) | 0.837 |
 | nazwy trafiające w prawdziwy typ (etap 2, `ctfidf`) | 77.2% części |
 
+## 3a. Etap 3 — obsługa z UI (`workflow-ui`)
+
+Zakładka **Lokalne (hybryda)** daje pełną pętlę human-in-the-loop z przeglądarki:
+
+- **Uruchomienie** z wyborem enkodera, metody nazywania, celu trafności i progu odkrywania.
+- **Kafelki metryk**: trafność OOF, ARI, udział przypisanych automatycznie, liczba części
+  do przeglądu. To liczby out-of-fold, nie z danych treningowych.
+- **Lista klastrów** z licznością; grupy zaproponowane przez etap 2 mają ikonę iskierki.
+- **Tabela części** posortowana rosnąco po marginesie pewności — najbardziej wątpliwe są
+  na górze. Kolumna `źródło` pokazuje, która warstwa podjęła decyzję
+  (`model` / `odkryty` / `override`). Filtr „tylko do przeglądu" zawęża do kolejki eksperta.
+- **Przypięcie na stałe**: w każdym wierszu pole z podpowiedziami istniejących klastrów
+  (można też wpisać zupełnie nową nazwę). Korekty zbierają się w koszyku, a przycisk
+  **„Zapisz i doucz model"** zapisuje je do `overrides.yaml` i od razu przelicza model.
+
+Nazywanie przez LLM włącza się samo, gdy `config.yaml` zawiera token — bez niego opcja
+jest wyszarzona, a reszta zakładki działa normalnie (tor lokalny nie potrzebuje chmury).
+
+**Uwaga projektowa**: korekta eksperta wchodzi do treningu **zawsze**, nawet jako jedyny
+przykład swojej klasy (`min_probek_klasy` jej nie dotyczy). Bez tego przypięcie części do
+zupełnie nowego klastra działałoby wyłącznie dla tego jednego PN, a podobne części dalej
+lądowałyby gdzie indziej — czyli model niczego by się nie nauczył.
+
 ## 4. Użycie
 
 ```bash
@@ -197,8 +220,7 @@ pip install sentence-transformers    # backendy minilm / bge (pobiera model z Hu
 ## 6. Co dalej (roadmapa)
 
 - **[Etap 2] ✅ ZROBIONE** — `naming.py`, opis wyżej.
-- **[Etap 3] Integracja w `workflow-ui`**: podgląd klastrów z kolumną `zrodlo` i `pewnosc`,
-  kolejka `DO_PRZEGLADU`, przycisk „przypnij na stałe" → `zapisz_override()` → re-trening.
+- **[Etap 3] ✅ ZROBIONE** — zakładka „Lokalne (hybryda)" w `workflow-ui`, opis niżej.
 - **[Etap 4] `search_agent` jako ratunek**: dla części z `DO_PRZEGLADU` o enigmatycznym opisie
   wyciągnąć wymiary i wagę z kart katalogowych i doklastrować detal.
 - **Walidacja na `cla.csv`**: większy zbiór (~15 tys. wierszy) — tam `+supcon` może się obronić.
@@ -212,6 +234,9 @@ pip install sentence-transformers    # backendy minilm / bge (pobiera model z Hu
 | `encoders.py` | wymienne enkodery: `tfidf`, `st:<model>`, `+supcon` (PyTorch) |
 | `local_clustering.py` | warstwy 0–3, dobór progu, zapis/odczyt modelu |
 | `naming.py` | etap 2: nazywanie grup (c-TF-IDF offline / 1 zapytanie LLM) + ocena nazw |
+| `wyniki/_ostatni_lokalny.json` | ostatni wynik w formacie dla UI (stała ścieżka) |
+| `../workflow-ui/src/lib/local.ts` | uruchamianie toru lokalnego i zapis korekt z UI |
+| `../workflow-ui/src/app/LocalPanel.tsx` | zakładka „Lokalne (hybryda)" |
 | `run_local.py` | CLI, uczciwa ewaluacja OOF, symulacja nowych typów, zapis wyników |
 | `overrides.yaml` | słownik eksperta PN → klaster (warstwa 0 / 3) |
 | `data_prep.py` | wczytanie danych, deduplikacja do PN, part card |

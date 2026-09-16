@@ -20,6 +20,9 @@ search_agent/cache/
 workflow-ui/node_modules/
 workflow-ui/.next/
 workflow-ui/out/
+# generowane automatycznie przez next.config (agentRules)
+workflow-ui/AGENTS.md
+workflow-ui/CLAUDE.md
 
 # OS
 .DS_Store

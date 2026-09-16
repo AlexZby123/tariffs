@@ -143,6 +143,30 @@ python run_local.py --nazywaj llm               # Etap 2: nazwij nowe grupy 1 za
 python run_local.py --override "0204X00136=RESERVOIR CAP"   # poprawka eksperta
 ```
 
+### Obsługa z przeglądarki
+
+Zakładka **Lokalne (hybryda)** w `workflow-ui` daje całą pętlę bez CLI:
+
+```bash
+cd workflow-ui
+npm install
+npm run dev      # http://localhost:3000
+```
+
+Tor lokalny **nie wymaga `config.yaml`** — zakładka działa od razu po `npm run dev`.
+Konfiguracja jest potrzebna tylko dla toru chmurowego i dla nazywania grup przez LLM
+(wtedy opcja „LLM" włącza się sama; bez tokenu jest wyszarzona).
+
+W tabeli części każdy wiersz ma pole **„Przypnij na stałe"** — wybierasz istniejący klaster
+albo wpisujesz nowy, korekty zbierają się w koszyku, a **„Zapisz i doucz model"** zapisuje je
+do `overrides.yaml` i od razu przelicza model. Część przypięta przez eksperta zawsze wchodzi
+do treningu, więc podobne części idą za Twoją decyzją.
+
+> [!NOTE]
+> Na Windows z condą ustaw `PYTHON_EXECUTABLE`, np.
+> `set PYTHON_EXECUTABLE=C:\Users\ZBA1WZ\.conda\envs\pandas_excel\python.exe`
+> przed `npm run dev` — UI uruchamia `run_local.py` tym interpreterem.
+
 > Pełny opis architektury, wszystkie pomiary i uzasadnienie decyzji projektowych (m.in.
 > dlaczego sieć neuronowa **nie** jest domyślnym enkoderem i dlaczego do modelu idzie
 > **tylko** `MATDESC`): **[`agentic/ARCHITEKTURA_LOKALNA.md`](agentic/ARCHITEKTURA_LOKALNA.md)**.
