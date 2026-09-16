@@ -5,6 +5,92 @@
 > i są liczone **out-of-fold** — nigdy na danych, na których model się uczył.
 > Odtworzenie: `python run_local.py --porownaj --sim-nowe 0.2`
 
+## 0. Dwa tryby — który do czego
+
+Projekt ma dwa lokalne tryby, które rozwiązują **różne zadania**. Mylenie ich prowadzi
+do mylnych wniosków z liczb.
+
+| tryb | zadanie | czy widzi etykiety Rudolfa | wynik |
+|---|---|---|---|
+| **`discover`** (domyślny) | zbuduj podział **od zera** — lokalny odpowiednik toru chmurowego | **nie** | ARI 0.72 offline / z chmurą wyżej |
+| `classify` | odtwarzaj **istniejącą** taksonomię na nowych częściach | tak, uczy się na nich | ARI 0.954 |
+
+Liczby z tych dwóch wierszy **nie są porównywalne**. `classify` rozwiązuje łatwiejsze
+zadanie — dostaje gotowe odpowiedzi i ma je powtórzyć. Uczciwe odniesienie dla `discover`
+to tor chmurowy: **ARI 0.885 przy ~45 zapytaniach agentowych**.
+
+---
+
+## 0a. Tryb `discover` — jak działa
+
+```
+MATDESC                             1025 części
+   │
+   ├─ [1] FRAZA TYPU — z opisu wycinamy sam typ części
+   │      "helical spring | SPRING; IBO2"           -> SPRING
+   │      "rubber gasket | SEPARATING SEAL; D 25.4" -> SEPARATING SEAL
+   │      1025 części  ->  ~274 unikalnych fraz
+   │
+   ├─ [2] FIZYKA — waga, objętość, wartość i gęstość na sztukę
+   │      O-RING 0.2 g | BALL 1.4 g | ŚRUBA 5.5 g | SENSOR 32 g | ECU 525 g
+   │      W danych wypełnione w 100%. Rozdziela typy, których opis nie rozróżnia.
+   │
+   ├─ [3] GRUPOWANIE FRAZ w typy funkcjonalne
+   │      cloud — JEDNO zapytanie do LLM na wszystkie frazy
+   │      local — aglomeracja na tekście frazy + fizyce, w pełni offline
+   │
+   └─ [4] PRZYPISANIE części do grupy jej frazy + overrides eksperta
+```
+
+### Dlaczego akurat tak — pomiary
+
+| metoda, **bez etykiet Rudolfa**, k=77 | ARI |
+|---|---|
+| sam opis, TF-IDF + aglomeracja (stary baseline) | 0.599 |
+| + ekstrakcja frazy typu | 0.655 |
+| **+ fizyka (waga 0.3)** | **0.715** |
+| chmura, ~45 zapytań agentowych | 0.885 |
+| **sufit tej architektury** (frazy pogrupowane idealnie) | **0.980** |
+
+Dwie rzeczy z tej tabeli są istotne:
+
+1. **Fizyka realnie pomaga.** Waga na sztukę to sygnał niezależny od tekstu i rozciąga się
+   przez pięć rzędów wielkości. Optimum 0.3 sprawdzone na rozłącznych połowach danych
+   (0.699 ± 0.016), więc nie jest dopasowane do zbioru oceny. Powyżej 0.4 fizyka zaczyna
+   topić opis (0.4 → 0.585).
+
+2. **Wąskim gardłem nie jest architektura, tylko grupowanie fraz.** Sufit to 0.980 —
+   gdyby te ~274 frazy pogrupować dokładnie tak jak Rudolf, wynik byłby znacznie powyżej
+   chmury. Samą frazą nie da się uratować tylko 2.2% części (21 sztuk), bo ich fraza trafia
+   do kilku klas naraz (`BALL` → BALL vs BALL JOINT, `COVER` → CLIP & CLAMP vs COVER ECU).
+
+### Czego tekst nie zrobi nigdy
+
+Policzone na parach fraz należących u Rudolfa do tej samej klasy:
+
+- **43.8%** par ma wspólne słowo — da się złapać lekykalnie
+- **56.2%** par nie ma żadnego wspólnego słowa — potrzebna wiedza o produktach
+
+Przykłady z tej drugiej grupy: `BRACKET` + `GUIDE RING`, `BA CLIP` + `CABLE TIE`,
+`CLEVIS` + `INPUT ROD TIP`, `ANTI-CORROSION OIL` + `LUBRICATING GREASE`. Żaden algorytm
+tekstowy tego nie połączy. To dokładnie ta luka, którą zamyka jedno zapytanie do LLM —
+i powód, dla którego grupowanie `cloud` jest domyślne.
+
+### Douczanie w trybie `discover`
+
+Korekta eksperta działa na **poziomie frazy**, nie pojedynczej części. Gdy przypniesz część
+do innego klastra, wszystkie części o tej samej frazie typu idą za tą decyzją.
+
+Zweryfikowane: jedno przypięcie `0204254243` do nowego klastra `BALL BEARINGS` przeniosło
+**25 części**, łącznie z wariantami `-KUGEL` i `-STANDARD`, bo ekstrakcja sprowadza je do
+tej samej frazy `BALL`.
+
+Zabezpieczenie: fraza jest przemapowana tylko wtedy, gdy **wszystkie** korekty dla niej
+wskazują ten sam klaster. Gdy ekspert przypiął dwie części o tej samej frazie do różnych
+klastrów, fraza jest wieloznaczna i zostają same przypięcia per PN.
+
+---
+
 ## 1. Kontekst i cele
 
 - **Problem**: chmurowe klastrowanie LLM (Bosch Model Farm) kosztuje, jest wolne i niedeterministyczne.
@@ -270,6 +356,7 @@ pip install sentence-transformers    # backendy minilm / bge (pobiera model z Hu
 |---|---|
 | `encoders.py` | wymienne enkodery: `tfidf`, `st:<model>`, `+supcon` (PyTorch) |
 | `local_clustering.py` | warstwy 0–3, dobór progu, zapis/odczyt modelu |
+| `discover.py` | tryb `discover`: fraza typu, cechy fizyczne, grupowanie fraz, douczanie |
 | `naming.py` | etap 2: nazywanie grup (c-TF-IDF offline / 1 zapytanie LLM) + ocena nazw |
 | `wyniki/_ostatni_lokalny.json` | ostatni wynik w formacie dla UI (stała ścieżka) |
 | `../workflow-ui/src/lib/local.ts` | uruchamianie toru lokalnego i zapis korekt z UI |

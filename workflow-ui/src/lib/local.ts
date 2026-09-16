@@ -24,6 +24,7 @@ export type LocalPart = {
   hs6: string;
   bu: string;
   n_rows: number;
+  type_phrase: string;
 };
 
 export type LocalCluster = {
@@ -36,6 +37,7 @@ export type LocalCluster = {
 };
 
 export type LocalResult = {
+  mode: "discover" | "classify";
   generated_at: string;
   directory: string;
   encoder: string;
@@ -49,6 +51,9 @@ export type LocalResult = {
 };
 
 export type LocalRunOptions = {
+  mode: "discover" | "classify";
+  grouping: "cloud" | "local";
+  physicsWeight: number;
   accuracyTarget: number;
   discoveryThreshold: number;
   limit: number | null;
@@ -185,19 +190,28 @@ function runPython(args: string[], label: string) {
 }
 
 export function startLocalRun(options: LocalRunOptions) {
-  const args = [
-    "run_local.py",
-    "--encoder",
-    STALY_ENKODER,
-    "--nazywaj",
-    STALE_NAZYWANIE,
-    "--cel-trafnosci",
-    String(options.accuracyTarget),
-    "--prog-odkrywania",
-    String(options.discoveryThreshold),
-  ];
+  const args = ["run_local.py", "--tryb", options.mode];
+  if (options.mode === "discover") {
+    args.push(
+      "--grupowanie",
+      options.grouping,
+      "--waga-fizyki",
+      String(options.physicsWeight),
+    );
+  } else {
+    args.push(
+      "--encoder",
+      STALY_ENKODER,
+      "--nazywaj",
+      STALE_NAZYWANIE,
+      "--cel-trafnosci",
+      String(options.accuracyTarget),
+      "--prog-odkrywania",
+      String(options.discoveryThreshold),
+    );
+  }
   if (options.limit) args.push("--limit", String(options.limit));
-  runPython(args, "local clustering");
+  runPython(args, `local clustering (${options.mode})`);
 }
 
 /**

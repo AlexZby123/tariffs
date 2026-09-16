@@ -28,6 +28,7 @@ import pandas as pd
 
 import data_prep as dp
 import evaluate
+import discover as dk
 import local_clustering as lc
 import naming
 
@@ -213,6 +214,71 @@ def nazwij_odkryte(model: lc.HybrydowyKlasyfikator, wynik: pd.DataFrame,
     return wynik
 
 
+def tryb_odkrywczy(args, rekordy: pd.DataFrame, pn_df: pd.DataFrame,
+                   y: np.ndarray, maska: np.ndarray, rudolf: pd.Series) -> None:
+    """Buduje podzial OD ZERA - lokalny odpowiednik toru chmurowego.
+
+    Etykiety Rudolfa NIE sa uzywane do budowania podzialu. Sluza wylacznie do
+    zewnetrznej oceny na koncu, zeby bylo wiadomo, ile ten podzial jest wart.
+    """
+    cfg = dk.KonfiguracjaOdkrywania(
+        waga_fizyki=args.waga_fizyki,
+        grupowanie=args.grupowanie,
+        n_klastrow=args.n_typow,
+    )
+    pn_df = pn_df.join(dk.cechy_fizyczne(rekordy), on="PN")
+
+    client = None
+    if cfg.grupowanie == "cloud":
+        try:
+            from llm_client import LLMClient, wczytaj_config
+            client = LLMClient(wczytaj_config())
+        except Exception as e:  # noqa: BLE001
+            print(f"  [discover] cloud unavailable ({type(e).__name__}: {str(e)[:90]})")
+            print("  [discover] grouping locally instead, fully offline")
+
+    print(f"\n[1] Building taxonomy from scratch (grouping: {cfg.grupowanie})...")
+    overrides = lc.load_overrides()
+    if overrides:
+        print(f"  [layer 0] {len(overrides)} expert corrections in overrides.yaml")
+    model = dk.KlastrowaczOdkrywczy(cfg).fit(pn_df, client=client, overrides=overrides)
+    if client is not None and client.calls:
+        print(f"  [discover] LLM cost: {client.podsumowanie_kosztow()}")
+
+    print("\n[2] Assigning parts...")
+    wynik_pn = model.predict(pn_df, overrides=overrides)
+
+    print("\n[3] External check against Rudolf (labels NOT used to build this)...")
+    met = _ocen_odkrycie(wynik_pn, y, maska)
+    if met:
+        print(f"  ARI={met['ari']:.3f}  pair_f1={met['pair_f1']:.3f}  NMI={met['nmi']:.3f}"
+              f"  (on {met['n']} labelled parts it was confident about)")
+        print(f"  reference: cloud agent pipeline ARI 0.885 using ~45 requests")
+
+    out = WYNIKI_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_discover_{cfg.grupowanie}"
+    met_wiersze = zapisz_wyniki(out, wynik_pn, rekordy, rudolf)
+    d = model.diagnostyka
+    oof_zastepczy = {"trafnosc": 0.0, "ari": met.get("ari", 0.0) if met else 0.0,
+                     "pair_f1": met.get("pair_f1", 0.0) if met else 0.0,
+                     "nmi": met.get("nmi", 0.0) if met else 0.0,
+                     "n_ocenianych": met.get("n", 0) if met else 0}
+    zapisz_json_odkrycie(out, wynik_pn, rekordy, model, oof_zastepczy, args)
+    print(f"\n  types discovered: {d.n_grup} | parts for review: {d.n_do_przegladu}")
+    print(f"  results -> {out.relative_to(KATALOG)}")
+    print("\nDone.")
+
+
+def _ocen_odkrycie(wynik_pn: pd.DataFrame, y: np.ndarray, maska: np.ndarray
+                   ) -> Optional[dict]:
+    """ARI/NMI wzgledem Rudolfa - wylacznie jako zewnetrzny sprawdzian."""
+    ma_etykiete = maska & (wynik_pn["cluster_name"].values != dk.ETYKIETA_PRZEGLAD)
+    if ma_etykiete.sum() < 20:
+        return None
+    met = evaluate.metryki(y[ma_etykiete], wynik_pn.loc[ma_etykiete, "cluster_name"].values)
+    met["n"] = int(ma_etykiete.sum())
+    return met
+
+
 # --------------------------------------------------------------------------- #
 #  Zapis wynikow
 # --------------------------------------------------------------------------- #
@@ -248,49 +314,57 @@ def zapisz_wyniki(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
     return {}
 
 
-def zapisz_json(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
-                model: lc.HybrydowyKlasyfikator, oof: dict, args,
-                sim: Optional[dict] = None) -> Path:
-    """Zapisuje wynik w formacie czytanym przez workflow-ui.
-
-    Trafia w dwa miejsca: do katalogu przebiegu (archiwum) i pod stala sciezke
-    OSTATNI_JSON, ktora UI odpytuje bez znajomosci timestampu.
-    """
-    d = model.diagnostyka
+def _czesci_i_klastry(wynik_pn: pd.DataFrame, rekordy: pd.DataFrame
+                      ) -> tuple[list[dict], list[dict]]:
+    """Wspolna dla obu trybow zamiana ramki wynikowej na strukture dla UI."""
     wiersze_na_pn = (rekordy.groupby(rekordy[dp.PN_KOL].astype(str)).size().to_dict()
                      if dp.PN_KOL in rekordy.columns else {})
-
-    czesci = []
-    for _, r in wynik_pn.iterrows():
-        pn = str(r["PN"])
-        czesci.append({
-            "pn": pn,
-            "description": str(r.get("MATDESC", ""))[:300],
-            "cluster": str(r["cluster_name"]),
-            "source": str(r["source"]),
-            "confidence": round(float(r["confidence"]), 4),
-            "hs6": str(r.get("HS6", "")),
-            "bu": str(r.get("BU", "")),
-            "n_rows": int(wiersze_na_pn.get(pn, 0)),
-        })
+    czesci = [{
+        "pn": str(r["PN"]),
+        "description": str(r.get("MATDESC", ""))[:300],
+        "cluster": str(r["cluster_name"]),
+        "source": str(r["source"]),
+        "confidence": round(float(r["confidence"]), 4),
+        "hs6": str(r.get("HS6", "")),
+        "bu": str(r.get("BU", "")),
+        "n_rows": int(wiersze_na_pn.get(str(r["PN"]), 0)),
+        "type_phrase": str(r.get("type_phrase", "")),
+    } for _, r in wynik_pn.iterrows()]
 
     agg = (wynik_pn.groupby("cluster_name")
            .agg(n_pn=("PN", "size"), mean_confidence=("confidence", "mean"))
            .reset_index())
-    zrodla_na_klaster = (wynik_pn.groupby(["cluster_name", "source"]).size()
-                         .unstack(fill_value=0).to_dict(orient="index"))
+    zrodla = (wynik_pn.groupby(["cluster_name", "source"]).size()
+              .unstack(fill_value=0).to_dict(orient="index"))
     klastry = [{
         "name": str(r["cluster_name"]),
         "n_pn": int(r["n_pn"]),
         "n_rows": int(sum(wiersze_na_pn.get(c["pn"], 0) for c in czesci
                           if c["cluster"] == r["cluster_name"])),
         "mean_confidence": round(float(r["mean_confidence"]), 4),
-        "sources": {k: int(v) for k, v in zrodla_na_klaster.get(r["cluster_name"], {}).items()},
+        "sources": {k: int(v) for k, v in zrodla.get(r["cluster_name"], {}).items()},
         "proposed": str(r["cluster_name"]).startswith(naming.PREFIKS_PROPOZYCJI)
                     or str(r["cluster_name"]).startswith(lc.PREFIKS_NOWY),
     } for _, r in agg.sort_values("n_pn", ascending=False).iterrows()]
+    return czesci, klastry
 
-    dane = {
+
+def _zapisz_dane(out: Path, dane: dict) -> Path:
+    tresc = json.dumps(dane, ensure_ascii=False, indent=1)
+    (out / "wynik.json").write_text(tresc, encoding="utf-8")
+    OSTATNI_JSON.parent.mkdir(parents=True, exist_ok=True)
+    OSTATNI_JSON.write_text(tresc, encoding="utf-8")
+    return OSTATNI_JSON
+
+
+def zapisz_json(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
+                model: lc.HybrydowyKlasyfikator, oof: dict, args,
+                sim: Optional[dict] = None) -> Path:
+    """Wynik trybu klasyfikujacego w formacie czytanym przez workflow-ui."""
+    d = model.diagnostyka
+    czesci, klastry = _czesci_i_klastry(wynik_pn, rekordy)
+    return _zapisz_dane(out, {
+        "mode": "classify",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "directory": out.name,
         "encoder": model.cfg.encoder,
@@ -312,12 +386,44 @@ def zapisz_json(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
         "clusters": klastry,
         "parts": czesci,
         "review_label": lc.ETYKIETA_PRZEGLAD,
-    }
-    tresc = json.dumps(dane, ensure_ascii=False, indent=1)
-    (out / "wynik.json").write_text(tresc, encoding="utf-8")
-    OSTATNI_JSON.parent.mkdir(parents=True, exist_ok=True)
-    OSTATNI_JSON.write_text(tresc, encoding="utf-8")
-    return OSTATNI_JSON
+    })
+
+
+def zapisz_json_odkrycie(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
+                         model, met: dict, args) -> Path:
+    """Wynik trybu odkrywczego. Ten sam ksztalt, zeby UI dzialalo bez zmian.
+
+    Metryki maja inne znaczenie niz w trybie klasyfikujacym: ARI jest tu
+    ZEWNETRZNYM sprawdzianem (etykiety nie budowaly podzialu), a nie miara
+    trafnosci modelu na swoim zadaniu.
+    """
+    d = model.diagnostyka
+    czesci, klastry = _czesci_i_klastry(wynik_pn, rekordy)
+    return _zapisz_dane(out, {
+        "mode": "discover",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "directory": out.name,
+        "encoder": f"discover/{d.grupowanie}",
+        "naming": d.grupowanie,
+        "taxonomy": sorted({str(c["name"]) for c in klastry}),
+        "metrics": {
+            "ari": round(met.get("ari", 0.0), 4),
+            "pair_f1": round(met.get("pair_f1", 0.0), 4),
+            "nmi": round(met.get("nmi", 0.0), 4),
+            "n_evaluated": int(met.get("n_ocenianych", 0)),
+            "n_classes": d.n_grup,
+            "n_type_phrases": d.n_fraz,
+            "phrases_grouped_by_llm": d.n_fraz_z_llm,
+            "phrases_grouped_locally": d.n_fraz_lokalnie,
+            "phrases_from_expert": d.n_fraz_od_eksperta,
+            "physics_weight": model.cfg.waga_fizyki,
+            "confidence_threshold": round(model.prog_pewnosci, 4),
+        },
+        "simulation": {},
+        "clusters": klastry,
+        "parts": czesci,
+        "review_label": dk.ETYKIETA_PRZEGLAD,
+    })
 
 
 # --------------------------------------------------------------------------- #
@@ -326,6 +432,16 @@ def zapisz_json(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Lokalne klastrowanie hybrydowe (bez LLM)")
+    p.add_argument("--tryb", default="discover", choices=["discover", "classify"],
+                   help="discover = zbuduj podzial OD ZERA, bez etykiet Rudolfa (dom.); "
+                        "classify = ucz sie etykiet Rudolfa i odtwarzaj je na nowych czesciach")
+    p.add_argument("--grupowanie", default="cloud", choices=["cloud", "local"],
+                   help="tryb discover: jak pogrupowac frazy typu. cloud = 1 zapytanie "
+                        "do LLM (dom.), local = w pelni offline")
+    p.add_argument("--waga-fizyki", type=float, default=0.30,
+                   help="tryb discover: udzial cech fizycznych (waga/objetosc/wartosc)")
+    p.add_argument("--n-typow", type=int, default=None,
+                   help="tryb discover, grupowanie local: docelowa liczba typow")
     p.add_argument("--encoder", default="tfidf",
                    help="tfidf | minilm | bge | st:<model>, opcjonalnie +supcon")
     p.add_argument("--dataset", default="to_cluster", choices=list(dp.ZRODLA))
@@ -374,7 +490,10 @@ def main() -> None:
         return
 
     print("=" * 70)
-    print("  LOCAL HYBRID CLUSTERING  (layers: override / classifier / discovery)")
+    naglowek = ("LOCAL DISCOVERY  (builds the taxonomy from scratch, no Rudolf labels)"
+                if args.tryb == "discover"
+                else "LOCAL HYBRID CLUSTERING  (layers: override / classifier / discovery)")
+    print(f"  {naglowek}")
     print("=" * 70)
 
     cfg = lc.KonfiguracjaHybrydy(
@@ -392,6 +511,11 @@ def main() -> None:
         raise SystemExit(f"  ERROR: {e}\n  Check the files in data_to_cluster/.")
     print(f"  rows={len(rekordy)}  PN={len(pn_df)}  "
           f"labelled PN={int(maska.sum())}  classes={pd.Series(y[maska]).nunique()}")
+    if args.tryb == "discover":
+        # podzial budowany bez etykiet - brak etykiet nie jest przeszkoda
+        tryb_odkrywczy(args, rekordy, pn_df, y, maska, rudolf)
+        return
+
     if maska.sum() < 20:
         raise SystemExit("  ERROR: too few labelled PN.")
 

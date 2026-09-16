@@ -678,3 +678,40 @@ textarea {
 }
 .disclosure:hover { text-decoration: underline; }
 .local-inputs label { align-content: start; }
+
+/* --- przelacznik trybu (od zera / ucz sie etykiet) --- */
+
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+@media (max-width: 760px) {
+  .mode-switch { grid-template-columns: 1fr; }
+}
+.mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fffefa;
+  color: var(--muted);
+  text-align: left;
+}
+.mode:hover { border-color: #aebbb4; }
+.mode.active {
+  border-color: var(--teal);
+  background: #d8eee6;
+  color: #135948;
+}
+.mode > svg { margin-top: 2px; flex-shrink: 0; }
+.mode b { display: block; font: 500 14px Georgia, serif; color: var(--foreground); }
+.mode.active b { color: #135948; }
+.mode small {
+  display: block;
+  margin-top: 3px;
+  font: 12px/1.45 Georgia, serif;
+  color: var(--muted);
+}

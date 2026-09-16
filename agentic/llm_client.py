@@ -298,6 +298,17 @@ def _mock_odpowiedz(system: str, user: str, json_mode: bool = True) -> str:
     w galaz odkrywania taksonomii.
     """
     low = user.lower()
+    # zadanie: grupowanie fraz typu (discover.grupuj_frazy_llm) - lista "  - FRAZA (~N g)"
+    if "PHRASES:" in user and "groups" in low:
+        frazy = re.findall(r"^\s*-\s+(.+?)(?:\s+\(~.*?\))?\s*$", 
+                           user.split("PHRASES:", 1)[1], flags=re.M)
+        wg_grupy: dict[str, list[str]] = {}
+        for f in frazy:
+            f = f.strip()
+            if f:
+                wg_grupy.setdefault(_mock_klasyfikuj_opis(f), []).append(f)
+        return json.dumps({"groups": [{"name": k, "members": v}
+                                      for k, v in wg_grupy.items()]})
     # zadanie: nazywanie grup (naming.nazwij_llm) - bloki GROUP "<id>" (...):
     grupy = re.findall(r'GROUP "([^"]+)"[^\n]*\n((?:[ \t]+-[^\n]*\n?)+)', user)
     if grupy:

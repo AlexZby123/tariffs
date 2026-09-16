@@ -27,6 +27,7 @@ type Part = {
   hs6: string;
   bu: string;
   n_rows: number;
+  type_phrase: string;
 };
 type Cluster = {
   name: string;
@@ -37,6 +38,7 @@ type Cluster = {
   proposed: boolean;
 };
 type Result = {
+  mode: "discover" | "classify";
   generated_at: string;
   encoder: string;
   naming: string;
@@ -63,6 +65,9 @@ export default function LocalPanel() {
   const [apiKey, setApiKey] = useState("");
   const [editingKey, setEditingKey] = useState(false);
 
+  const [mode, setMode] = useState<"discover" | "classify">("discover");
+  const [grouping, setGrouping] = useState<"cloud" | "local">("cloud");
+  const [physicsWeight, setPhysicsWeight] = useState(0.3);
   const [advanced, setAdvanced] = useState(false);
   const [accuracyTarget, setAccuracyTarget] = useState(0.999);
   const [discoveryThreshold, setDiscoveryThreshold] = useState(0.6);
@@ -73,7 +78,14 @@ export default function LocalPanel() {
   const [reviewOnly, setReviewOnly] = useState(false);
   const [pending, setPending] = useState<Record<string, string>>({});
 
-  const runOptions = { accuracyTarget, discoveryThreshold, limit };
+  const runOptions = {
+    mode,
+    grouping,
+    physicsWeight,
+    accuracyTarget,
+    discoveryThreshold,
+    limit,
+  };
 
   const load = async () => {
     const data = await (await fetch("/api/local")).json();
@@ -159,8 +171,8 @@ export default function LocalPanel() {
       .filter(
         (p) =>
           !reviewOnly ||
-          p.source === "discovered" ||
-          p.cluster === result.review_label,
+          p.cluster === result.review_label ||
+          (result.mode === "classify" && p.source === "discovered"),
       )
       .filter(
         (p) =>
@@ -173,10 +185,12 @@ export default function LocalPanel() {
       .slice(0, 300);
   }, [result, query, clusterFilter, reviewOnly]);
 
-  const reviewCount = useMemo(
-    () => (result?.parts ?? []).filter((p) => p.source === "discovered").length,
-    [result],
-  );
+  const reviewCount = useMemo(() => {
+    if (!result) return 0;
+    return result.mode === "discover"
+      ? result.parts.filter((p) => p.cluster === result.review_label).length
+      : result.parts.filter((p) => p.source === "discovered").length;
+  }, [result]);
 
   const statusIcon =
     run.state === "failed" ? (
@@ -194,13 +208,41 @@ export default function LocalPanel() {
       <section className="run-card">
         <div>
           <p className="eyebrow">LOCAL TRACK — RUNS ON THIS MACHINE</p>
-          <h2>Hybrid clustering</h2>
+          <h2>{mode === "discover" ? "Discovery clustering" : "Hybrid clustering"}</h2>
           <p className="hint">
-            Known part types are assigned by a classifier that reaches 95.6%
-            accuracy out-of-fold. Parts it is not sure about are grouped
-            separately and named by the cloud model, then land in your review
-            queue.
+            {mode === "discover"
+              ? "Part types are extracted from the descriptions, combined with physical features (weight, volume, value per piece) and grouped into functional types. One cloud request per run supplies the product knowledge that text alone cannot."
+              : "Known part types are assigned by a classifier trained on your existing labels. Parts it is not sure about are grouped separately and land in your review queue."}
           </p>
+        </div>
+
+        <div className="mode-switch">
+          <button
+            className={mode === "discover" ? "mode active" : "mode"}
+            onClick={() => setMode("discover")}
+          >
+            <Sparkles size={15} />
+            <span>
+              <b>Build from scratch</b>
+              <small>
+                No existing labels. The system decides which part types exist —
+                the local counterpart of the cloud agent pipeline.
+              </small>
+            </span>
+          </button>
+          <button
+            className={mode === "classify" ? "mode active" : "mode"}
+            onClick={() => setMode("classify")}
+          >
+            <Cpu size={15} />
+            <span>
+              <b>Learn existing labels</b>
+              <small>
+                Reproduces a taxonomy someone already built, on new parts.
+                Needs labelled data; reaches 95.6% accuracy.
+              </small>
+            </span>
+          </button>
         </div>
 
         <div className="apikey-row">
@@ -251,7 +293,73 @@ export default function LocalPanel() {
           Advanced settings
         </button>
 
-        {advanced && (
+        {advanced && mode === "discover" && (
+          <div className="run-inputs local-inputs">
+            <label>
+              Phrase grouping
+              <select
+                value={grouping}
+                onChange={(event) =>
+                  setGrouping(event.target.value as typeof grouping)
+                }
+              >
+                <option value="cloud" disabled={!llmReady}>
+                  Cloud — 1 request{llmReady ? "" : " (needs API key)"}
+                </option>
+                <option value="local">Fully offline</option>
+              </select>
+              <small className="hint">
+                Descriptions collapse to a few hundred distinct type phrases.
+                Grouping those into functional types is where product knowledge
+                is needed — Rudolf puts BRACKET and GUIDE RING in one class, and
+                no text algorithm derives that. Offline grouping reaches ARI
+                0.70; the cloud pipeline it replaces reaches 0.885 using ~45
+                requests instead of one.
+              </small>
+            </label>
+
+            <label>
+              Physical features weight
+              <input
+                type="number"
+                step="0.05"
+                min="0"
+                max="0.6"
+                value={physicsWeight}
+                onChange={(event) =>
+                  setPhysicsWeight(Number(event.target.value))
+                }
+              />
+              <small className="hint">
+                How much weight, volume, value and density per piece count
+                against the text. They separate types the wording does not: an
+                O-ring is 0.2 g, a ball 1.4 g, a sensor 32 g, a hydraulic unit
+                650 g. Measured optimum is 0.3 on disjoint halves of the data;
+                past 0.4 the physics starts drowning the description.
+              </small>
+            </label>
+
+            <label>
+              Part-number limit
+              <input
+                type="number"
+                min="1"
+                placeholder="empty = all 1025"
+                value={limit ?? ""}
+                onChange={(event) =>
+                  setLimit(event.target.value ? Number(event.target.value) : null)
+                }
+              />
+              <small className="hint">
+                For quick tests only. Takes the first N part numbers in file
+                order, and the file is grouped by product family — so a small
+                sample is badly skewed.
+              </small>
+            </label>
+          </div>
+        )}
+
+        {advanced && mode === "classify" && (
           <div className="run-inputs local-inputs">
             <label>
               Review workload
@@ -331,30 +439,61 @@ export default function LocalPanel() {
 
       {result && (
         <section className="metrics">
-          <div className="metric">
-            <b>{pct(result.metrics.oof_accuracy)}</b>
-            <span>accuracy (out-of-fold)</span>
-          </div>
-          <div className="metric">
-            <b>{result.metrics.ari?.toFixed(3)}</b>
-            <span>ARI — cloud agents get 0.885</span>
-          </div>
-          <div className="metric">
-            <b>{pct(result.metrics.auto_assigned_share)}</b>
-            <span>assigned automatically</span>
-          </div>
-          <div className="metric">
-            <b>{pct(result.metrics.auto_assigned_accuracy)}</b>
-            <span>accuracy of those</span>
-          </div>
-          <div className="metric warn">
-            <b>{reviewCount}</b>
-            <span>parts to review</span>
-          </div>
-          <div className="metric">
-            <b>{result.clusters.length}</b>
-            <span>clusters ({result.metrics.n_classes} known)</span>
-          </div>
+          {result.mode === "discover" ? (
+            <>
+              <div className="metric">
+                <b>{result.metrics.ari?.toFixed(3)}</b>
+                <span>ARI vs Rudolf — external check</span>
+              </div>
+              <div className="metric">
+                <b>{result.metrics.n_classes}</b>
+                <span>part types discovered</span>
+              </div>
+              <div className="metric">
+                <b>{result.metrics.n_type_phrases}</b>
+                <span>distinct type phrases</span>
+              </div>
+              <div className="metric">
+                <b>{result.metrics.phrases_grouped_by_llm || 0}</b>
+                <span>phrases grouped by cloud</span>
+              </div>
+              <div className="metric warn">
+                <b>{reviewCount}</b>
+                <span>parts to review</span>
+              </div>
+              <div className="metric">
+                <b>{result.metrics.physics_weight}</b>
+                <span>physics weight used</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="metric">
+                <b>{pct(result.metrics.oof_accuracy)}</b>
+                <span>accuracy (out-of-fold)</span>
+              </div>
+              <div className="metric">
+                <b>{result.metrics.ari?.toFixed(3)}</b>
+                <span>ARI — cloud agents get 0.885</span>
+              </div>
+              <div className="metric">
+                <b>{pct(result.metrics.auto_assigned_share)}</b>
+                <span>assigned automatically</span>
+              </div>
+              <div className="metric">
+                <b>{pct(result.metrics.auto_assigned_accuracy)}</b>
+                <span>accuracy of those</span>
+              </div>
+              <div className="metric warn">
+                <b>{reviewCount}</b>
+                <span>parts to review</span>
+              </div>
+              <div className="metric">
+                <b>{result.clusters.length}</b>
+                <span>clusters ({result.metrics.n_classes} known)</span>
+              </div>
+            </>
+          )}
         </section>
       )}
 
@@ -420,7 +559,7 @@ export default function LocalPanel() {
                     <th>Description</th>
                     <th>Cluster</th>
                     <th>Assigned by</th>
-                    <th>Margin</th>
+                    <th>{result.mode === "discover" ? "Fit" : "Margin"}</th>
                     <th>Pin permanently</th>
                   </tr>
                 </thead>

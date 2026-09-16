@@ -35,6 +35,35 @@ type RunState = {
   output: string[];
 };
 
+/**
+ * config.yaml bywa niepelny - napisany recznie albo zalozony przez zapis
+ * samego klucza API. Brak sekcji taxonomy/run/features wywracal cala strone
+ * (razem z zakladka lokalna, ktora tej konfiguracji w ogole nie potrzebuje),
+ * bo JSX siegal po config.taxonomy.mode. Uzupelniamy braki domyslnymi.
+ */
+function uzupelnijConfig(surowy: Partial<Config> | null): Config | null {
+  if (!surowy || typeof surowy !== "object") return null;
+  return {
+    provider: surowy.provider ?? "bosch",
+    deployment: surowy.deployment ?? "",
+    model: surowy.model ?? "",
+    temperature: surowy.temperature ?? 0,
+    max_tokens: surowy.max_tokens ?? 8000,
+    hasApiKey: Boolean(surowy.hasApiKey),
+    run: {
+      batch_size: surowy.run?.batch_size ?? 25,
+      concurrency: surowy.run?.concurrency ?? 4,
+      discovery_sample: surowy.run?.discovery_sample ?? 180,
+    },
+    taxonomy: {
+      mode: surowy.taxonomy?.mode ?? "discover",
+      allow_new: surowy.taxonomy?.allow_new ?? true,
+      labels: surowy.taxonomy?.labels ?? [],
+    },
+    features: { part_card: surowy.features?.part_card ?? [] },
+  };
+}
+
 const featureOptions = [
   "desc",
   "hs6",
@@ -91,7 +120,7 @@ export default function Home() {
         return response.json();
       })
       .then((data) => {
-        if (!cancelled) setConfig(data);
+        if (!cancelled) setConfig(uzupelnijConfig(data));
       })
       .catch(() => {
         if (!cancelled)
