@@ -184,8 +184,14 @@ class KonfiguracjaOdkrywania:
     n_klastrow: Optional[int] = None
     """Docelowa liczba typow. None -> dobierana progiem odleglosci."""
 
-    prog_odleglosci: float = 0.55
-    """Prog aglomeracji, gdy n_klastrow is None."""
+    prog_odleglosci: float = 0.75
+    """Prog aglomeracji, gdy n_klastrow is None.
+
+    Zmierzone na rozlacznych polowach (4 losowania), grupowanie lokalne:
+        0.55 -> 148 typow, ARI 0.657    0.75 -> 102 typy, ARI 0.740
+        0.70 -> 119 typow, ARI 0.706    0.85 ->  76 typow, ARI 0.721
+    Ponizej 0.7 taksonomia rozpada sie na setki mikro-typow (przy 0.55 az 55
+    grup jednoelementowych), co zaniza wynik i zasypuje eksperta."""
 
     grupowanie: str = "cloud"
     """'cloud' (1 zapytanie do LLM) albo 'local' (w pelni offline)."""
@@ -215,56 +221,111 @@ def przestrzen_cech(pn_df: pd.DataFrame, cfg: KonfiguracjaOdkrywania
 
 SYSTEM_GRUPOWANIA = (
     "You build a parts taxonomy for a customs & logistics team at Bosch. "
-    "You are given SHORT TYPE PHRASES extracted from material descriptions of "
+    "You are given NUMBERED type phrases extracted from material descriptions of "
     "automotive/industrial parts, each with the median weight of the parts it covers. "
-    "Group them into COARSE FUNCTIONAL PART TYPES - what the part IS, not what it is made "
-    "of, and not its size. Merge synonyms and closely related types into one group "
+    "Assign every phrase to a COARSE FUNCTIONAL PART TYPE - what the part IS, not what it "
+    "is made of, and not its size. Merge synonyms and closely related types into one group "
     "(e.g. SCREW + BOLT + NUT + STUD + PIN belong together; BRACKET + SUPPORT + GUIDE RING "
     "+ NEEDLE BEARING belong together; CLIP + CLAMP + CABLE TIE belong together). "
-    "Aim for roughly 40-90 groups in total. Use SHORT, UPPERCASE group names. "
-    "Every input phrase must appear in exactly one group."
+    "Aim for 40-90 groups across the whole dataset. Use SHORT, UPPERCASE group names."
 )
+
+#: Ile fraz w jednym zapytaniu. Odpowiedz musi zmiescic sie w budzecie tokenow -
+#: przy 274 frazach naraz model byl ucinany w polowie JSON-a.
+PARTIA_FRAZ = 90
+
+
+def _parsuj_przypisania(obj) -> dict[int, str]:
+    """Wyciaga {numer: nazwa_grupy} z odpowiedzi modelu.
+
+    Tolerancyjnie, bo odpowiedz bywa ucieta: gdy JSON nie parsuje sie w calosci,
+    ratujemy kompletne pary "numer": "grupa" wyrazeniem regularnym. Lepiej
+    odzyskac 80 przypisan niz stracic cala partie.
+    """
+    wynik: dict[int, str] = {}
+
+    def dodaj(k, v) -> None:
+        try:
+            numer = int(str(k).strip())
+        except (TypeError, ValueError):
+            return
+        nazwa = str(v).strip().strip('"').upper()
+        if nazwa:
+            wynik[numer] = nazwa
+
+    if isinstance(obj, dict):
+        zrodlo = obj.get("assignments", obj.get("groups", obj))
+        if isinstance(zrodlo, dict):
+            for k, v in zrodlo.items():
+                dodaj(k, v)
+        elif isinstance(zrodlo, list):
+            for poz in zrodlo:
+                if isinstance(poz, dict):
+                    dodaj(poz.get("i", poz.get("id")), poz.get("g", poz.get("group", "")))
+    elif isinstance(obj, str):
+        for k, v in re.findall(r'"(\d+)"\s*:\s*"([^"]*)"', obj):
+            dodaj(k, v)
+    return wynik
 
 
 def grupuj_frazy_llm(frazy_z_waga: dict[str, float], client,
-                     docelowo: str = "40-90") -> dict[str, str]:
-    """JEDNO zapytanie do LLM grupujace wszystkie frazy typu.
+                     rozmiar_partii: int = PARTIA_FRAZ, verbose: bool = True
+                     ) -> dict[str, str]:
+    """Grupuje frazy typu przez LLM, partiami, z odpornoscia na urwana odpowiedz.
 
-    Args:
-        frazy_z_waga: {fraza: mediana wagi w gramach}
-        client: llm_client.LLMClient
-        docelowo: sugerowana liczba grup
+    Format odpowiedzi jest celowo zwiezly - {"1": "GROUP"} zamiast przepisywania
+    calych fraz w tablicach members. Echo wszystkich 274 fraz nie miescilo sie w
+    budzecie tokenow i model byl ucinany w polowie JSON-a.
+
+    Kolejne partie dostaja liste juz utworzonych grup, zeby ich nie duplikowac.
+    Partia, ktora sie nie powiedzie, jest pomijana - wywolujacy dogrupuje te
+    frazy lokalnie, reszta wyniku zostaje.
 
     Returns:
-        {fraza: nazwa_grupy}. Frazy pominiete przez model NIE trafiaja do wyniku -
-        wywolujacy dogrupowuje je lokalnie.
+        {fraza: nazwa_grupy} - tylko dla fraz, ktore model faktycznie przypisal.
     """
     if not frazy_z_waga:
         return {}
-    linie = "\n".join(
-        f"  - {f}  (~{w:.1f} g)" if np.isfinite(w) else f"  - {f}"
-        for f, w in sorted(frazy_z_waga.items())
-    )
-    user = (
-        f"Group the {len(frazy_z_waga)} part-type phrases below into about {docelowo} "
-        "coarse functional part types.\n"
-        'Return JSON: {"groups": [{"name": "<GROUP NAME>", "members": ["<phrase>", ...]}, ...]}. '
-        "Use the phrases EXACTLY as given in members.\n\n"
-        f"PHRASES:\n{linie}"
-    )
-    obj = client.chat_json(SYSTEM_GRUPOWANIA, user)
 
+    frazy = sorted(frazy_z_waga)
     mapa: dict[str, str] = {}
-    for grupa in (obj.get("groups") or []):
-        if not isinstance(grupa, dict):
+    utworzone: list[str] = []
+
+    for start in range(0, len(frazy), rozmiar_partii):
+        partia = frazy[start:start + rozmiar_partii]
+        linie = []
+        for i, f in enumerate(partia, start=1):
+            w = frazy_z_waga[f]
+            linie.append(f"{i}. {f}" + (f"  (~{w:.1f} g)" if np.isfinite(w) else ""))
+
+        juz = ""
+        if utworzone:
+            juz = ("\nGroups you already created - reuse these names whenever they fit, "
+                   "instead of inventing near-duplicates:\n"
+                   + ", ".join(sorted(set(utworzone))) + "\n")
+
+        user = (
+            f"Assign each of the {len(partia)} numbered phrases below to a coarse "
+            "functional part type.\n"
+            'Return ONLY compact JSON mapping every number to a group name: '
+            '{"assignments": {"1": "GROUP NAME", "2": "GROUP NAME", ...}}\n'
+            "Do not repeat the phrases themselves - only the numbers.\n"
+            f"{juz}\nPHRASES:\n" + "\n".join(linie)
+        )
+
+        try:
+            przypisania = _parsuj_przypisania(client.chat_json(SYSTEM_GRUPOWANIA, user))
+        except Exception as e:  # noqa: BLE001 - jedna partia nie psuje reszty
+            if verbose:
+                print(f"  [discover] batch {start // rozmiar_partii + 1} failed "
+                      f"({type(e).__name__}: {str(e)[:80]}) - those phrases go local")
             continue
-        nazwa = str(grupa.get("name", "")).strip().strip('"').upper()
-        if not nazwa:
-            continue
-        for czlon in (grupa.get("members") or []):
-            czlon = str(czlon).strip().upper()
-            if czlon in frazy_z_waga:
-                mapa[czlon] = nazwa
+
+        for numer, grupa in przypisania.items():
+            if 1 <= numer <= len(partia):
+                mapa[partia[numer - 1]] = grupa
+                utworzone.append(grupa)
+
     return mapa
 
 
@@ -313,6 +374,7 @@ class DiagnostykaOdkrywania:
     n_fraz_z_llm: int = 0
     n_fraz_lokalnie: int = 0
     n_fraz_od_eksperta: int = 0
+    n_zapytan: int = 0
     pewnosc_mediana: float = 0.0
     n_do_przegladu: int = 0
 
@@ -347,11 +409,15 @@ class KlastrowaczOdkrywczy:
         if cfg.grupowanie == "cloud" and client is not None:
             wagi = self._mediany_wag(pn_df, frazy, unikalne)
             try:
-                mapa = grupuj_frazy_llm(wagi, client)
+                zapytan_przed = getattr(client, "calls", 0)
+                mapa = grupuj_frazy_llm(wagi, client, verbose=verbose)
                 self.diagnostyka.n_fraz_z_llm = len(mapa)
+                self.diagnostyka.n_zapytan = getattr(client, "calls", 0) - zapytan_przed
                 if verbose:
+                    n = self.diagnostyka.n_zapytan
                     print(f"  [discover] LLM grouped {len(mapa)}/{len(unikalne)} phrases "
-                          f"into {len(set(mapa.values()))} types (1 request)")
+                          f"into {len(set(mapa.values()))} types "
+                          f"({n} request{'s' if n != 1 else ''})")
             except Exception as e:  # noqa: BLE001
                 if verbose:
                     print(f"  [discover] cloud grouping failed "

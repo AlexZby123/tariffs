@@ -101,6 +101,12 @@ def wyciagnij_json(txt: str) -> Any:
         poz = [p for p in parsed if isinstance(p, dict) and "id" in p]
         if poz:
             return {"assignments": poz}
+        # RATUNEK 2: plaskie mapowanie {"1": "GRUPA", ...} uciete w polowie.
+        # Uzywa go discover.grupuj_frazy_llm - lepiej odzyskac czesc przypisan
+        # niz stracic cala partie przez brakujacy nawias na koncu.
+        pary = re.findall(r'"([^"\\]{1,60})"\s*:\s*"([^"\\]{1,80})"', txt)
+        if len(pary) >= 3:
+            return {"assignments": {k: v for k, v in pary}}
         raise ValueError(f"Could not parse JSON from the LLM response:\n{txt[:500]}")
 
 
@@ -299,16 +305,11 @@ def _mock_odpowiedz(system: str, user: str, json_mode: bool = True) -> str:
     """
     low = user.lower()
     # zadanie: grupowanie fraz typu (discover.grupuj_frazy_llm) - lista "  - FRAZA (~N g)"
-    if "PHRASES:" in user and "groups" in low:
-        frazy = re.findall(r"^\s*-\s+(.+?)(?:\s+\(~.*?\))?\s*$", 
-                           user.split("PHRASES:", 1)[1], flags=re.M)
-        wg_grupy: dict[str, list[str]] = {}
-        for f in frazy:
-            f = f.strip()
-            if f:
-                wg_grupy.setdefault(_mock_klasyfikuj_opis(f), []).append(f)
-        return json.dumps({"groups": [{"name": k, "members": v}
-                                      for k, v in wg_grupy.items()]})
+    if "PHRASES:" in user and "assignments" in low:
+        ponumerowane = re.findall(r"^\s*(\d+)\.\s+(.+?)(?:\s+\(~.*?\))?\s*$",
+                                  user.split("PHRASES:", 1)[1], flags=re.M)
+        return json.dumps({"assignments": {n: _mock_klasyfikuj_opis(f.strip())
+                                           for n, f in ponumerowane}})
     # zadanie: nazywanie grup (naming.nazwij_llm) - bloki GROUP "<id>" (...):
     grupy = re.findall(r'GROUP "([^"]+)"[^\n]*\n((?:[ \t]+-[^\n]*\n?)+)', user)
     if grupy:

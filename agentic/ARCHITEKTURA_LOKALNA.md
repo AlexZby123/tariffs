@@ -64,6 +64,35 @@ Dwie rzeczy z tej tabeli są istotne:
    chmury. Samą frazą nie da się uratować tylko 2.2% części (21 sztuk), bo ich fraza trafia
    do kilku klas naraz (`BALL` → BALL vs BALL JOINT, `COVER` → CLIP & CLAMP vs COVER ECU).
 
+### Grupowanie fraz przez LLM — partiami
+
+Pierwsza wersja wysyłała wszystkie ~274 frazy w jednym zapytaniu i kazała modelowi
+przepisać je z powrotem w tablicach `members`. Na prawdziwym Model Farm odpowiedź została
+**ucięta po 304 tokenach wyjścia** — JSON urwał się w połowie pierwszej grupy, parser rzucił
+wyjątek i całe grupowanie spadło na lokalny fallback (`phrases_grouped_by_llm: 0`).
+
+Trzy poprawki:
+
+1. **Zwięzły format odpowiedzi.** Frazy są numerowane, model zwraca `{"1": "GRUPA"}` zamiast
+   przepisywać pełne teksty. Kilka razy mniej tokenów wyjścia na frazę.
+2. **Partie po 90 fraz.** Każda kolejna dostaje listę już utworzonych grup, żeby nie mnożyć
+   near-duplikatów. 274 frazy = 4 zapytania (wobec ~45 w torze chmurowym).
+3. **Odporność na obcięcie.** Gdy JSON i tak się nie sparsuje, ratowane są kompletne pary
+   `"numer": "grupa"`. Nieudana partia nie psuje reszty — te frazy idą lokalnie, pozostałe
+   zostają.
+
+### Próg lokalnego fallbacku
+
+Domyślne 0.55 dawało 148–165 mikro-typów (55 grup jednoelementowych). Zmierzone na
+rozłącznych połowach, 4 losowania:
+
+| próg | typów | ARI |
+|---|---|---|
+| 0.55 | 148 | 0.657 |
+| 0.70 | 119 | 0.706 |
+| **0.75 (obecny)** | **102** | **0.740** |
+| 0.85 | 76 | 0.721 |
+
 ### Czego tekst nie zrobi nigdy
 
 Policzone na parach fraz należących u Rudolfa do tej samej klasy:

@@ -416,6 +416,7 @@ def zapisz_json_odkrycie(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFram
             "phrases_grouped_by_llm": d.n_fraz_z_llm,
             "phrases_grouped_locally": d.n_fraz_lokalnie,
             "phrases_from_expert": d.n_fraz_od_eksperta,
+            "llm_requests": d.n_zapytan,
             "physics_weight": model.cfg.waga_fizyki,
             "confidence_threshold": round(model.prog_pewnosci, 4),
         },
