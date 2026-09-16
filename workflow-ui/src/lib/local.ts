@@ -83,13 +83,31 @@ export function getLocalRunState(): LocalRunState {
   return localRunState;
 }
 
-/** Ostatni wynik toru lokalnego; null gdy jeszcze nic nie policzono. */
+/**
+ * Ostatni wynik toru lokalnego; null gdy nic nie policzono ALBO gdy plik jest
+ * w niezgodnym formacie.
+ *
+ * Katalog wyniki/ jest w .gitignore, wiec po pullu nowego kodu potrafi lezec
+ * tam plik zapisany przez starsza wersje (miala polskie klucze: czesci,
+ * klastry, metryki). Bez tej walidacji komponent dostawal obiekt bez pola
+ * parts i cala strona sie wywracala. Traktujemy taki plik jak brak wyniku -
+ * kolejne uruchomienie klastrowania go nadpisze.
+ */
 export async function readLocalResult(): Promise<LocalResult | null> {
+  let parsed: unknown;
   try {
-    return JSON.parse(await fs.readFile(wynikPath, "utf8")) as LocalResult;
+    parsed = JSON.parse(await fs.readFile(wynikPath, "utf8"));
   } catch {
     return null;
   }
+  if (!parsed || typeof parsed !== "object") return null;
+  const kandydat = parsed as Partial<LocalResult>;
+  const zgodny =
+    Array.isArray(kandydat.parts) &&
+    Array.isArray(kandydat.clusters) &&
+    kandydat.metrics != null &&
+    typeof kandydat.metrics === "object";
+  return zgodny ? (kandydat as LocalResult) : null;
 }
 
 /**

@@ -53,7 +53,7 @@ type RunState = {
   output: string[];
 };
 
-const pct = (x: number) => `${((x ?? 0) * 100).toFixed(1)}%`;
+const pct = (x: number | undefined) => `${((x ?? 0) * 100).toFixed(1)}%`;
 
 export default function LocalPanel() {
   const [result, setResult] = useState<Result | null>(null);
@@ -166,7 +166,7 @@ export default function LocalPanel() {
   const visible = useMemo(() => {
     if (!result) return [];
     const needle = query.trim().toLowerCase();
-    return result.parts
+    return (result.parts ?? [])
       .filter((p) => !clusterFilter || p.cluster === clusterFilter)
       .filter(
         (p) =>
@@ -187,9 +187,10 @@ export default function LocalPanel() {
 
   const reviewCount = useMemo(() => {
     if (!result) return 0;
+    const parts = result.parts ?? [];
     return result.mode === "discover"
-      ? result.parts.filter((p) => p.cluster === result.review_label).length
-      : result.parts.filter((p) => p.source === "discovered").length;
+      ? parts.filter((p) => p.cluster === result.review_label).length
+      : parts.filter((p) => p.source === "discovered").length;
   }, [result]);
 
   const statusIcon =
@@ -442,19 +443,19 @@ export default function LocalPanel() {
           {result.mode === "discover" ? (
             <>
               <div className="metric">
-                <b>{result.metrics.ari?.toFixed(3)}</b>
+                <b>{(result.metrics?.ari ?? 0).toFixed(3)}</b>
                 <span>ARI vs Rudolf — external check</span>
               </div>
               <div className="metric">
-                <b>{result.metrics.n_classes}</b>
+                <b>{result.metrics?.n_classes}</b>
                 <span>part types discovered</span>
               </div>
               <div className="metric">
-                <b>{result.metrics.n_type_phrases}</b>
+                <b>{result.metrics?.n_type_phrases}</b>
                 <span>distinct type phrases</span>
               </div>
               <div className="metric">
-                <b>{result.metrics.phrases_grouped_by_llm || 0}</b>
+                <b>{result.metrics?.phrases_grouped_by_llm || 0}</b>
                 <span>phrases grouped by cloud</span>
               </div>
               <div className="metric warn">
@@ -462,26 +463,26 @@ export default function LocalPanel() {
                 <span>parts to review</span>
               </div>
               <div className="metric">
-                <b>{result.metrics.physics_weight}</b>
+                <b>{result.metrics?.physics_weight}</b>
                 <span>physics weight used</span>
               </div>
             </>
           ) : (
             <>
               <div className="metric">
-                <b>{pct(result.metrics.oof_accuracy)}</b>
+                <b>{pct(result.metrics?.oof_accuracy)}</b>
                 <span>accuracy (out-of-fold)</span>
               </div>
               <div className="metric">
-                <b>{result.metrics.ari?.toFixed(3)}</b>
+                <b>{(result.metrics?.ari ?? 0).toFixed(3)}</b>
                 <span>ARI — cloud agents get 0.885</span>
               </div>
               <div className="metric">
-                <b>{pct(result.metrics.auto_assigned_share)}</b>
+                <b>{pct(result.metrics?.auto_assigned_share)}</b>
                 <span>assigned automatically</span>
               </div>
               <div className="metric">
-                <b>{pct(result.metrics.auto_assigned_accuracy)}</b>
+                <b>{pct(result.metrics?.auto_assigned_accuracy)}</b>
                 <span>accuracy of those</span>
               </div>
               <div className="metric warn">
@@ -489,8 +490,8 @@ export default function LocalPanel() {
                 <span>parts to review</span>
               </div>
               <div className="metric">
-                <b>{result.clusters.length}</b>
-                <span>clusters ({result.metrics.n_classes} known)</span>
+                <b>{(result.clusters ?? []).length}</b>
+                <span>clusters ({result.metrics?.n_classes ?? 0} known)</span>
               </div>
             </>
           )}
@@ -508,10 +509,10 @@ export default function LocalPanel() {
               className={clusterFilter ? "chip" : "chip active"}
               onClick={() => setClusterFilter(null)}
             >
-              all ({result.parts.length} PN)
+              all ({(result.parts ?? []).length} PN)
             </button>
             <div className="cluster-scroll">
-              {result.clusters.map((c) => (
+              {(result.clusters ?? []).map((c) => (
                 <button
                   key={c.name}
                   className={
