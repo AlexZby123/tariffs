@@ -127,9 +127,10 @@ Każda część przechodzi przez trzy warstwy i dostaje w wyniku kolumnę `zrodl
 | 2 | reszta → `AgglomerativeClustering(cosine)` → `NOWY_1`, `NOWY_2`… | `odkryty` |
 | 3 | poprawka eksperta wraca do warstwy 0 i uczy model | — |
 
-Grupy z warstwy 2 dostają na końcu nazwy (**Etap 2**, `naming.py`): domyślnie offline
-metodą c-TF-IDF (0 zł, 77% nazw trafia w prawdziwy typ części), opcjonalnie **jednym**
-zapytaniem do LLM na wszystkie grupy naraz — zmierzone: 1 zapytanie zamiast ~41.
+Grupy z warstwy 2 dostają na końcu nazwy (**Etap 2**, `naming.py`): domyślnie **jednym**
+zapytaniem do LLM na wszystkie grupy naraz (zmierzone: 1 zapytanie zamiast ~41), z
+automatycznym zejściem na offline'ową metodę c-TF-IDF (0 zł, 77% nazw trafia w prawdziwy
+typ części), gdy chmura jest niedostępna.
 
 Próg warstwy 1 **dobiera się sam** (z predykcji out-of-fold) tak, by trafność przyjętych
 osiągnęła `--cel-trafnosci`. Domyślnie warstwa 1 przyjmuje ~83% części **bez ani jednego
@@ -146,7 +147,7 @@ python run_local.py --override "0204X00136=RESERVOIR CAP"   # poprawka eksperta
 
 ### Obsługa z przeglądarki
 
-Zakładka **Lokalne (hybryda)** w `workflow-ui` daje całą pętlę bez CLI:
+Zakładka **Local (hybrid)** w `workflow-ui` daje całą pętlę bez CLI:
 
 ```bash
 cd workflow-ui
@@ -154,19 +155,29 @@ npm install
 npm run dev      # http://localhost:3000
 ```
 
-Tor lokalny **nie wymaga `config.yaml`** — zakładka działa od razu po `npm run dev`.
-Konfiguracja jest potrzebna tylko dla toru chmurowego i dla nazywania grup przez LLM
-(wtedy opcja „LLM" włącza się sama; bez tokenu jest wyszarzona).
+Interfejs jest po angielsku, a widok domyślny celowo minimalny: pole na klucz API,
+rozwijane „Advanced settings" i przycisk uruchomienia. Enkoder (`tfidf`) i nazywanie przez
+LLM są **zaszyte na stałe** — pomiary rozstrzygnęły, co jest najlepsze. Pozostałe warianty
+zostały w kodzie i są dostępne z CLI (`--encoder minilm`, `--nazywaj ctfidf` itd.).
 
-W tabeli części każdy wiersz ma pole **„Przypnij na stałe"** — wybierasz istniejący klaster
-albo wpisujesz nowy, korekty zbierają się w koszyku, a **„Zapisz i doucz model"** zapisuje je
+**Klucz API wklejasz w UI** — zapisuje się do `agentic/config.yaml` (plik powstaje sam,
+jeśli go nie ma) i nigdy nie wraca do przeglądarki. Nazywanie grup przez LLM to **jedno
+zapytanie na cały bieg**, więc może działać przy każdym klastrowaniu. Gdy token wygaśnie
+albo endpoint nie odpowie, bieg **nie przerywa się** — grupy dostają nazwy offline'ową
+heurystyką, a w logu pojawia się informacja dlaczego.
+
+Tor lokalny **nie wymaga `config.yaml`** — zakładka działa od razu po `npm run dev`.
+
+W tabeli części każdy wiersz ma pole **„Pin permanently"** — wybierasz istniejący klaster
+albo wpisujesz nowy, korekty zbierają się w koszyku, a **„Save and retrain"** zapisuje je
 do `overrides.yaml` i od razu przelicza model. Część przypięta przez eksperta zawsze wchodzi
 do treningu, więc podobne części idą za Twoją decyzją.
 
 > [!NOTE]
-> Na Windows z condą ustaw `PYTHON_EXECUTABLE`, np.
-> `set PYTHON_EXECUTABLE=C:\Users\ZBA1WZ\.conda\envs\pandas_excel\python.exe`
-> przed `npm run dev` — UI uruchamia `run_local.py` tym interpreterem.
+> Na Windows z condą ustaw `PYTHON_EXECUTABLE` na interpreter swojego środowiska, np.
+> `set PYTHON_EXECUTABLE=C:\Users\ZBA1WZ\.conda\envs\vm\python.exe` przed `npm run dev`
+> (albo na stałe w pliku `workflow-ui\.env.local`). Bez tego UI sięga po Anacondę base.
+> Którego interpretera używa, widać w pierwszej linii logu po uruchomieniu.
 
 > Pełny opis architektury, wszystkie pomiary i uzasadnienie decyzji projektowych (m.in.
 > dlaczego sieć neuronowa **nie** jest domyślnym enkoderem i dlaczego do modelu idzie

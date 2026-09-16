@@ -545,20 +545,21 @@ textarea {
   text-transform: uppercase;
   text-align: left;
 }
-.parts-table th:nth-child(1) { width: 14%; }
-.parts-table th:nth-child(2) { width: 30%; }
+.parts-table th:nth-child(1) { width: 13%; }
+.parts-table th:nth-child(2) { width: 27%; }
 .parts-table th:nth-child(3) { width: 20%; }
-.parts-table th:nth-child(4) { width: 9%; }
-.parts-table th:nth-child(5) { width: 9%; }
-.parts-table th:nth-child(6) { width: 18%; }
+.parts-table th:nth-child(4) { width: 12%; }
+.parts-table th:nth-child(5) { width: 8%; }
+.parts-table th:nth-child(6) { width: 20%; }
 .parts-table td {
   padding: 7px 8px;
   border-top: 1px solid var(--line);
   color: var(--foreground);
   vertical-align: middle;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
+/* wielokropek tylko tam, gdzie tekst naprawde moze byc dlugi */
+.parts-table td.desc { text-overflow: ellipsis; }
 .parts-table tbody tr:hover td { background: #f7f8f2; }
 .parts-table tr.pending td { background: #d8eee6; }
 .parts-table .mono {
@@ -578,7 +579,7 @@ textarea {
   white-space: nowrap;
 }
 .badge.src-model { background: #d8eee6; color: #135948; }
-.badge.src-odkryty { background: #fbe6c8; color: #8a5a10; }
+.badge.src-discovered { background: #fbe6c8; color: #8a5a10; }
 .badge.src-override { background: #fbdfd6; color: #a33a1e; }
 .badge.pinned { margin-left: 6px; background: #fbdfd6; color: #a33a1e; }
 
@@ -632,3 +633,48 @@ textarea {
   text-align: center;
   font-size: 14px;
 }
+
+/* --- pomoc kontekstowa, klucz API, sekcja zaawansowana --- */
+
+.hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font: 12px/1.5 Georgia, serif;
+  max-width: 62ch;
+}
+.run-card > div > .hint { margin-top: 8px; }
+
+.apikey-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fffefa;
+  font-size: 13px;
+}
+.apikey-row > svg { color: var(--teal); flex-shrink: 0; }
+.apikey-row .hint { margin-top: 0; flex-basis: 100%; }
+.key-input {
+  flex: 1;
+  min-width: 260px;
+  margin: 0;
+}
+.key-input input { width: 100%; }
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--teal);
+  font: 500 13px Georgia, serif;
+}
+.disclosure:hover { text-decoration: underline; }
+.local-inputs label { align-content: start; }

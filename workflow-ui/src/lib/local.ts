@@ -8,7 +8,7 @@
 import { spawn } from "child_process";
 import fs from "fs/promises";
 import path from "path";
-import { load } from "js-yaml";
+import { dump, load } from "js-yaml";
 import { agenticDir, resolvePythonCommand } from "./workflow";
 
 const wynikPath = path.join(agenticDir, "wyniki", "_ostatni_lokalny.json");
@@ -17,44 +17,52 @@ const configPath = path.join(agenticDir, "config.yaml");
 
 export type LocalPart = {
   pn: string;
-  opis: string;
-  klaster: string;
-  zrodlo: "override" | "model" | "odkryty";
-  pewnosc: number;
+  description: string;
+  cluster: string;
+  source: "override" | "model" | "discovered";
+  confidence: number;
   hs6: string;
   bu: string;
-  n_wierszy: number;
+  n_rows: number;
 };
 
 export type LocalCluster = {
-  nazwa: string;
+  name: string;
   n_pn: number;
-  n_wierszy: number;
-  pewnosc_srednia: number;
-  zrodla: Record<string, number>;
-  propozycja: boolean;
+  n_rows: number;
+  mean_confidence: number;
+  sources: Record<string, number>;
+  proposed: boolean;
 };
 
 export type LocalResult = {
-  wygenerowano: string;
-  katalog: string;
-  enkoder: string;
-  nazywanie: string;
-  taksonomia: string[];
-  metryki: Record<string, number>;
-  symulacja: Record<string, number>;
-  klastry: LocalCluster[];
-  czesci: LocalPart[];
-  etykieta_przegladu: string;
+  generated_at: string;
+  directory: string;
+  encoder: string;
+  naming: string;
+  taxonomy: string[];
+  metrics: Record<string, number>;
+  simulation: Record<string, number>;
+  clusters: LocalCluster[];
+  parts: LocalPart[];
+  review_label: string;
 };
 
 export type LocalRunOptions = {
-  encoder: string;
-  nazywaj: "ctfidf" | "llm" | "brak";
-  celTrafnosci: number;
-  progOdkrywania: number;
+  accuracyTarget: number;
+  discoveryThreshold: number;
   limit: number | null;
 };
+
+/**
+ * Ustawienia zaszyte na stale - w UI nie ma ich po co pokazywac.
+ * tfidf wygral pomiary (ARI 0.954 vs 0.937 dla tfidf+supcon), a nazywanie
+ * przez LLM kosztuje 1 zapytanie na caly bieg i samo spada na c-TF-IDF,
+ * gdy klucz jest nieustawiony albo endpoint nie odpowiada.
+ * Pozostale backendy zostaja dostepne z CLI: run_local.py --encoder ...
+ */
+const STALY_ENKODER = "tfidf";
+const STALE_NAZYWANIE = "llm";
 
 type LocalRunState = {
   state: "idle" | "running" | "finished" | "failed";
@@ -96,6 +104,32 @@ export async function isLlmReady(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Zapisuje klucz Model Farm do agentic/config.yaml. Gdy pliku nie ma, zaklada
+ * go na bazie config.example.yaml, zeby uzytkownik nie musial nic kopiowac
+ * recznie. Klucz nigdy nie wraca do przegladarki - UI dostaje tylko flage.
+ */
+export async function saveApiKey(apiKey: string): Promise<void> {
+  const klucz = apiKey.trim();
+  if (!klucz) throw new Error("Empty API key.");
+
+  let cfg: Record<string, unknown> = {};
+  for (const sciezka of [configPath, path.join(agenticDir, "config.example.yaml")]) {
+    try {
+      const parsed = load(await fs.readFile(sciezka, "utf8"));
+      if (parsed && typeof parsed === "object") {
+        cfg = parsed as Record<string, unknown>;
+        break;
+      }
+    } catch {
+      // brak pliku - probujemy nastepny, a na koncu zapisujemy same minimum
+    }
+  }
+  cfg.api_key = klucz;
+  if (!cfg.provider || cfg.provider === "mock") cfg.provider = "bosch";
+  await fs.writeFile(configPath, dump(cfg, { lineWidth: -1, noRefs: true }), "utf8");
 }
 
 /** Slownik eksperta PN -> klaster (warstwa 0). */
@@ -154,16 +188,16 @@ export function startLocalRun(options: LocalRunOptions) {
   const args = [
     "run_local.py",
     "--encoder",
-    options.encoder,
+    STALY_ENKODER,
     "--nazywaj",
-    options.nazywaj,
+    STALE_NAZYWANIE,
     "--cel-trafnosci",
-    String(options.celTrafnosci),
+    String(options.accuracyTarget),
     "--prog-odkrywania",
-    String(options.progOdkrywania),
+    String(options.discoveryThreshold),
   ];
   if (options.limit) args.push("--limit", String(options.limit));
-  runPython(args, "klastrowanie lokalne");
+  runPython(args, "local clustering");
 }
 
 /**

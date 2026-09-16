@@ -60,13 +60,13 @@ function Tabs({
         className={tab === "lokalne" ? "tab active" : "tab"}
         onClick={() => setTab("lokalne")}
       >
-        <HardDrive size={16} /> Lokalne (hybryda)
+        <HardDrive size={16} /> Local (hybrid)
       </button>
       <button
         className={tab === "chmura" ? "tab active" : "tab"}
         onClick={() => setTab("chmura")}
       >
-        <Cloud size={16} /> Chmurowe (agenci LLM)
+        <Cloud size={16} /> Cloud (LLM agents)
       </button>
     </nav>
   );
@@ -96,8 +96,8 @@ export default function Home() {
       .catch(() => {
         if (!cancelled)
           setNotice(
-            "Brak agentic/config.yaml - tor chmurowy nieaktywny. " +
-              "Skopiuj config.example.yaml, aby go wlaczyc. Tor lokalny dziala bez niego.",
+            "No agentic/config.yaml yet — the cloud agent track is inactive. " +
+              "The local track works without it; saving an API key below creates the file.",
           );
       });
     return () => {
@@ -155,11 +155,11 @@ export default function Home() {
           <LocalPanel />
         ) : (
           <p className="loading">
-            <CircleDashed className="spin" /> Wczytywanie konfiguracji chmurowej…
+            <CircleDashed className="spin" /> Loading cloud configuration…
             <br />
             <small>
-              Tor chmurowy wymaga agentic/config.yaml (skopiuj z
-              config.example.yaml). Tor lokalny działa bez niego.
+              The cloud track needs agentic/config.yaml. The local track works
+              without it.
             </small>
           </p>
         )}
@@ -189,16 +189,16 @@ export default function Home() {
       <section className="title-row">
         <div>
           <p className="eyebrow">WORKFLOW CONTROL</p>
-          <h1>Klastrowanie części</h1>
+          <h1>Part clustering</h1>
           <p className="subtitle">
             {tab === "lokalne"
-              ? "Tor lokalny: bez chmury, bez tokenów. Przypnij część do klastra, a model się na tym nauczy."
-              : "Tor chmurowy: taksonomia, kontekst danych i ustawienia agentów."}
+              ? "Runs on this machine. Pin a part to a cluster and the model learns from it."
+              : "Cloud track: taxonomy, data context and agent execution settings."}
           </p>
         </div>
         {tab === "chmura" && (
           <button className="primary" onClick={save}>
-            <Save size={17} /> Zapisz zmiany
+            <Save size={17} /> Save changes
           </button>
         )}
       </section>

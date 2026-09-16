@@ -100,7 +100,7 @@ class TfidfEncoder(BaseEncoder):
         return self
 
     def transform(self, texts: Sequence[str]) -> np.ndarray:
-        assert self.svd is not None, "Najpierw fit()."
+        assert self.svd is not None, "Call fit() first."
         X = self._raw(list(texts), fit=False)
         return normalize(self.svd.transform(X)).astype(np.float32)
 
@@ -136,11 +136,11 @@ class SentenceTransformerEncoder(BaseEncoder):
                 from sentence_transformers import SentenceTransformer
             except ImportError as e:  # pragma: no cover - zalezy od srodowiska
                 raise ImportError(
-                    "Backend 'st:' wymaga pakietu sentence-transformers.\n"
+                    "The 'st:' backend requires the sentence-transformers package.\n"
                     "  pip install sentence-transformers\n"
-                    "Bez dostepu do HuggingFace uzyj --encoder tfidf."
+                    "Without HuggingFace access use --encoder tfidf."
                 ) from e
-            print(f"  [enkoder] laduje {self.model_name} ...")
+            print(f"  [encoder] loading {self.model_name} ...")
             self._model = SentenceTransformer(self.model_name)
         return self._model
 
@@ -155,7 +155,7 @@ class SentenceTransformerEncoder(BaseEncoder):
         plik = self.cache_dir / f"{klucz}.npy" if self.cache_dir else None
         if plik is not None and plik.exists():
             emb = np.load(plik)
-            print(f"  [enkoder] embeddingi z cache ({plik.name})")
+            print(f"  [encoder] embeddings from cache ({plik.name})")
             self._dim = emb.shape[1]
             return emb
 
@@ -226,11 +226,11 @@ class SupConEncoder(BaseEncoder):
 
     def fit(self, texts: Sequence[str], y: Optional[np.ndarray] = None) -> "SupConEncoder":
         if y is None:
-            raise ValueError("SupConEncoder wymaga etykiet (y) do treningu.")
+            raise ValueError("SupConEncoder requires labels (y) for training.")
         try:
             import torch
         except ImportError as e:  # pragma: no cover - zalezy od srodowiska
-            raise ImportError("Backend '+supcon' wymaga PyTorch: pip install torch") from e
+            raise ImportError("The '+supcon' backend requires PyTorch: pip install torch") from e
         import pandas as pd
 
         torch.manual_seed(self.seed)
@@ -260,7 +260,7 @@ class SupConEncoder(BaseEncoder):
 
     def transform(self, texts: Sequence[str]) -> np.ndarray:
         import torch
-        assert self._net is not None, "Najpierw fit()."
+        assert self._net is not None, "Call fit() first."
         Z = self.base.transform(list(texts))
         with torch.no_grad():
             emb = torch.nn.functional.normalize(self._net(torch.tensor(Z)), dim=-1)
@@ -308,8 +308,8 @@ def zbuduj_enkoder(spec: str = "tfidf", **kw) -> BaseEncoder:
         base = SentenceTransformerEncoder("BAAI/bge-small-en-v1.5")
     else:
         raise ValueError(
-            f"Nieznany enkoder: {spec!r}. Dozwolone: 'tfidf', 'minilm', 'bge', "
-            f"'st:<model>', opcjonalnie z sufiksem '+supcon'."
+            f"Unknown encoder: {spec!r}. Allowed: 'tfidf', 'minilm', 'bge', "
+            f"'st:<model>', optionally with the '+supcon' suffix."
         )
     return SupConEncoder(base, **{k: v for k, v in kw.items()
                                   if k in ("out_dim", "epochs", "seed")}) if supcon else base

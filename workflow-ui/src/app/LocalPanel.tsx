@@ -4,8 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CircleDashed,
   Cpu,
+  KeyRound,
   Pin,
   Play,
   Search,
@@ -17,45 +20,38 @@ import {
 
 type Part = {
   pn: string;
-  opis: string;
-  klaster: string;
-  zrodlo: "override" | "model" | "odkryty";
-  pewnosc: number;
+  description: string;
+  cluster: string;
+  source: "override" | "model" | "discovered";
+  confidence: number;
   hs6: string;
   bu: string;
-  n_wierszy: number;
+  n_rows: number;
 };
 type Cluster = {
-  nazwa: string;
+  name: string;
   n_pn: number;
-  n_wierszy: number;
-  pewnosc_srednia: number;
-  zrodla: Record<string, number>;
-  propozycja: boolean;
+  n_rows: number;
+  mean_confidence: number;
+  sources: Record<string, number>;
+  proposed: boolean;
 };
 type Result = {
-  wygenerowano: string;
-  enkoder: string;
-  nazywanie: string;
-  taksonomia: string[];
-  metryki: Record<string, number>;
-  klastry: Cluster[];
-  czesci: Part[];
-  etykieta_przegladu: string;
+  generated_at: string;
+  encoder: string;
+  naming: string;
+  taxonomy: string[];
+  metrics: Record<string, number>;
+  clusters: Cluster[];
+  parts: Part[];
+  review_label: string;
 };
 type RunState = {
   state: "idle" | "running" | "finished" | "failed";
   output: string[];
 };
 
-const encoderOptions = [
-  { value: "tfidf", label: "tfidf — offline, domyślny (ARI 0.954)" },
-  { value: "tfidf+supcon", label: "tfidf+supcon — sieć metryczna (PyTorch)" },
-  { value: "minilm", label: "minilm — bi-encoder (HuggingFace)" },
-  { value: "bge", label: "bge-small — bi-encoder (HuggingFace)" },
-];
-
-const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+const pct = (x: number) => `${((x ?? 0) * 100).toFixed(1)}%`;
 
 export default function LocalPanel() {
   const [result, setResult] = useState<Result | null>(null);
@@ -63,111 +59,122 @@ export default function LocalPanel() {
   const [run, setRun] = useState<RunState>({ state: "idle", output: [] });
   const [notice, setNotice] = useState("");
 
-  const [encoder, setEncoder] = useState("tfidf");
-  const [nazywaj, setNazywaj] = useState<"ctfidf" | "llm" | "brak">("ctfidf");
-  const [llmGotowy, setLlmGotowy] = useState(false);
-  const [wybranoNazywanie, setWybranoNazywanie] = useState(false);
-  const [celTrafnosci, setCelTrafnosci] = useState(0.999);
-  const [progOdkrywania, setProgOdkrywania] = useState(0.6);
+  const [llmReady, setLlmReady] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [editingKey, setEditingKey] = useState(false);
+
+  const [advanced, setAdvanced] = useState(false);
+  const [accuracyTarget, setAccuracyTarget] = useState(0.999);
+  const [discoveryThreshold, setDiscoveryThreshold] = useState(0.6);
   const [limit, setLimit] = useState<number | null>(null);
 
-  const [szukaj, setSzukaj] = useState("");
-  const [filtrKlaster, setFiltrKlaster] = useState<string | null>(null);
-  const [tylkoPrzeglad, setTylkoPrzeglad] = useState(false);
-  const [koszyk, setKoszyk] = useState<Record<string, string>>({});
+  const [query, setQuery] = useState("");
+  const [clusterFilter, setClusterFilter] = useState<string | null>(null);
+  const [reviewOnly, setReviewOnly] = useState(false);
+  const [pending, setPending] = useState<Record<string, string>>({});
 
-  const runOptions = { encoder, nazywaj, celTrafnosci, progOdkrywania, limit };
+  const runOptions = { accuracyTarget, discoveryThreshold, limit };
 
-  const wczytaj = async () => {
+  const load = async () => {
     const data = await (await fetch("/api/local")).json();
-    setResult(data.wynik);
+    setResult(data.result);
     setOverrides(data.overrides ?? {});
-    setLlmGotowy(Boolean(data.llmGotowy));
-    // token skonfigurowany -> nazywanie przez LLM ma sens jako domyslne,
-    // ale nie nadpisujemy wyboru, ktorego uzytkownik juz dokonal
-    if (data.llmGotowy && !wybranoNazywanie) setNazywaj("llm");
+    setLlmReady(Boolean(data.llmReady));
   };
 
   useEffect(() => {
-    void wczytaj();
+    void load();
   }, []);
 
-  // odpytuj stan biegu; po zakonczeniu przeladuj wynik
   useEffect(() => {
     if (run.state !== "running") return;
     const timer = window.setInterval(async () => {
       const state: RunState = await (await fetch("/api/local/run")).json();
       setRun(state);
-      if (state.state !== "running") void wczytaj();
+      if (state.state !== "running") void load();
     }, 1500);
     return () => window.clearInterval(timer);
   }, [run.state]);
 
-  const uruchom = async () => {
+  const start = async () => {
     const response = await fetch("/api/local/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(runOptions),
     });
     const body = await response.json();
-    if (!response.ok) return setNotice(body.error ?? "Nie udało się uruchomić.");
+    if (!response.ok) return setNotice(body.error ?? "Could not start the run.");
     setRun(body);
-    setNotice("Klastrowanie lokalne uruchomione.");
+    setNotice("Clustering started.");
   };
 
-  const zapiszKorekty = async (doucz: boolean) => {
+  const storeApiKey = async () => {
+    const response = await fetch("/api/local/apikey", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey }),
+    });
+    const body = await response.json();
+    if (!response.ok) return setNotice(body.error ?? "Could not save the key.");
+    setLlmReady(Boolean(body.llmReady));
+    setApiKey("");
+    setEditingKey(false);
+    setNotice("API key saved to agentic/config.yaml.");
+  };
+
+  const saveCorrections = async (retrain: boolean) => {
     const response = await fetch("/api/local/override", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ przypisania: koszyk, doucz, runOptions }),
+      body: JSON.stringify({ przypisania: pending, doucz: retrain, runOptions }),
     });
     const body = await response.json();
-    if (!response.ok) return setNotice(body.error ?? "Zapis nie powiódł się.");
+    if (!response.ok) return setNotice(body.error ?? "Saving failed.");
     setOverrides(body.overrides ?? {});
-    setKoszyk({});
+    setPending({});
     setNotice(
-      doucz
-        ? `Zapisano ${body.zapisane} korekt. Model uczy się na nich teraz.`
-        : `Zapisano ${body.zapisane} korekt. Doucz model, aby je uwzględnić.`,
+      retrain
+        ? `Saved ${body.zapisane} correction(s). The model is retraining on them now.`
+        : `Saved ${body.zapisane} correction(s). Retrain to apply them.`,
     );
-    if (doucz) setRun({ state: "running", output: [] });
+    if (retrain) setRun({ state: "running", output: [] });
   };
 
-  const nazwyKlastrow = useMemo(
+  const clusterNames = useMemo(
     () =>
       Array.from(
         new Set([
-          ...(result?.taksonomia ?? []),
-          ...(result?.klastry ?? []).map((c) => c.nazwa),
+          ...(result?.taxonomy ?? []),
+          ...(result?.clusters ?? []).map((c) => c.name),
         ]),
       ).sort(),
     [result],
   );
 
-  const widoczne = useMemo(() => {
+  const visible = useMemo(() => {
     if (!result) return [];
-    const fraza = szukaj.trim().toLowerCase();
-    return result.czesci
-      .filter((p) => !filtrKlaster || p.klaster === filtrKlaster)
+    const needle = query.trim().toLowerCase();
+    return result.parts
+      .filter((p) => !clusterFilter || p.cluster === clusterFilter)
       .filter(
         (p) =>
-          !tylkoPrzeglad ||
-          p.zrodlo === "odkryty" ||
-          p.klaster === result.etykieta_przegladu,
+          !reviewOnly ||
+          p.source === "discovered" ||
+          p.cluster === result.review_label,
       )
       .filter(
         (p) =>
-          !fraza ||
-          p.pn.toLowerCase().includes(fraza) ||
-          p.opis.toLowerCase().includes(fraza) ||
-          p.klaster.toLowerCase().includes(fraza),
+          !needle ||
+          p.pn.toLowerCase().includes(needle) ||
+          p.description.toLowerCase().includes(needle) ||
+          p.cluster.toLowerCase().includes(needle),
       )
-      .sort((a, b) => a.pewnosc - b.pewnosc)
+      .sort((a, b) => a.confidence - b.confidence)
       .slice(0, 300);
-  }, [result, szukaj, filtrKlaster, tylkoPrzeglad]);
+  }, [result, query, clusterFilter, reviewOnly]);
 
-  const doPrzegladu = useMemo(
-    () => (result?.czesci ?? []).filter((p) => p.zrodlo === "odkryty").length,
+  const reviewCount = useMemo(
+    () => (result?.parts ?? []).filter((p) => p.source === "discovered").length,
     [result],
   );
 
@@ -186,84 +193,138 @@ export default function LocalPanel() {
 
       <section className="run-card">
         <div>
-          <p className="eyebrow">TOR LOKALNY — BEZ CHMURY</p>
-          <h2>Klastrowanie hybrydowe</h2>
+          <p className="eyebrow">LOCAL TRACK — RUNS ON THIS MACHINE</p>
+          <h2>Hybrid clustering</h2>
+          <p className="hint">
+            Known part types are assigned by a classifier that reaches 95.6%
+            accuracy out-of-fold. Parts it is not sure about are grouped
+            separately and named by the cloud model, then land in your review
+            queue.
+          </p>
         </div>
-        <div className="run-inputs local-inputs">
-          <label>
-            Enkoder
-            <select
-              value={encoder}
-              onChange={(event) => setEncoder(event.target.value)}
-            >
-              {encoderOptions.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Nazywanie nowych grup
-            <select
-              value={nazywaj}
-              onChange={(event) => {
-                setWybranoNazywanie(true);
-                setNazywaj(event.target.value as typeof nazywaj);
-              }}
-            >
-              <option value="ctfidf">c-TF-IDF — offline, 0 zł</option>
-              <option value="llm" disabled={!llmGotowy}>
-                LLM — 1 zapytanie na wszystkie grupy
-                {llmGotowy ? "" : " (brak config.yaml)"}
-              </option>
-              <option value="brak">bez nazw (NOWY_1, NOWY_2…)</option>
-            </select>
-          </label>
-          <label>
-            Cel trafności warstwy 1
-            <select
-              value={celTrafnosci}
-              onChange={(event) => setCelTrafnosci(Number(event.target.value))}
-            >
-              <option value={0.98}>0.98 — maks. automatyzacja</option>
-              <option value={0.99}>0.99</option>
-              <option value={0.995}>0.995</option>
-              <option value={0.999}>0.999 — maks. wykrywanie nowości</option>
-            </select>
-          </label>
-          <label>
-            Próg odkrywania
-            <input
-              type="number"
-              step="0.05"
-              min="0.1"
-              max="0.95"
-              value={progOdkrywania}
-              onChange={(event) =>
-                setProgOdkrywania(Number(event.target.value))
-              }
-            />
-          </label>
-          <label>
-            Limit PN (puste = całość)
-            <input
-              type="number"
-              min="1"
-              value={limit ?? ""}
-              onChange={(event) =>
-                setLimit(event.target.value ? Number(event.target.value) : null)
-              }
-            />
-          </label>
+
+        <div className="apikey-row">
+          <KeyRound size={16} />
+          {llmReady && !editingKey ? (
+            <>
+              <span>
+                <b>Cloud naming active.</b> Discovered groups get real names on
+                every run — one request per run, so the cost is negligible.
+              </span>
+              <button className="link" onClick={() => setEditingKey(true)}>
+                replace key
+              </button>
+            </>
+          ) : (
+            <>
+              <label className="key-input">
+                Model Farm API key
+                <input
+                  type="password"
+                  placeholder="paste the token — saved to agentic/config.yaml"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                />
+              </label>
+              <button
+                className="secondary"
+                disabled={!apiKey.trim()}
+                onClick={storeApiKey}
+              >
+                Save key
+              </button>
+              {!llmReady && (
+                <span className="hint">
+                  Without a key the run still works — new groups fall back to
+                  offline keyword naming.
+                </span>
+              )}
+            </>
+          )}
         </div>
+
+        <button
+          className="disclosure"
+          onClick={() => setAdvanced((value) => !value)}
+        >
+          {advanced ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          Advanced settings
+        </button>
+
+        {advanced && (
+          <div className="run-inputs local-inputs">
+            <label>
+              Review workload
+              <select
+                value={accuracyTarget}
+                onChange={(event) =>
+                  setAccuracyTarget(Number(event.target.value))
+                }
+              >
+                <option value={0.98}>Smallest queue — 5% of parts</option>
+                <option value={0.99}>Small queue — 9%</option>
+                <option value={0.995}>Balanced — 12%</option>
+                <option value={0.999}>Safest — 17% (default)</option>
+              </select>
+              <small className="hint">
+                How accurate the classifier must be on what it assigns by
+                itself. Safer means fewer silent mistakes and better detection
+                of genuinely new part types, at the cost of more parts landing
+                in your queue. At the default it made no mistakes at all on the
+                83% it accepted.
+              </small>
+            </label>
+
+            <label>
+              Discovery threshold
+              <input
+                type="number"
+                step="0.05"
+                min="0.1"
+                max="0.95"
+                value={discoveryThreshold}
+                onChange={(event) =>
+                  setDiscoveryThreshold(Number(event.target.value))
+                }
+              />
+              <small className="hint">
+                How far apart two parts may be and still form one discovered
+                group. Affects only the review queue, never parts the classifier
+                assigned. Lower (0.4) splits into more, smaller, cleaner groups;
+                higher (0.8) merges into fewer, larger ones and risks mixing
+                different types. Merging two clean groups costs you one click —
+                untangling a wrong merge does not.
+              </small>
+            </label>
+
+            <label>
+              Part-number limit
+              <input
+                type="number"
+                min="1"
+                placeholder="empty = all 1025"
+                value={limit ?? ""}
+                onChange={(event) =>
+                  setLimit(event.target.value ? Number(event.target.value) : null)
+                }
+              />
+              <small className="hint">
+                For quick tests only. Takes the first N part numbers in file
+                order, and the file is grouped by product family — so a small
+                sample is badly skewed and row-level evaluation is skipped.
+                Leave empty to judge quality.
+              </small>
+            </label>
+          </div>
+        )}
+
         <div className="actions">
           <button
             className="primary"
             disabled={run.state === "running"}
-            onClick={uruchom}
+            onClick={start}
           >
-            <Play size={17} fill="currentColor" /> Uruchom klastrowanie
+            <Play size={17} fill="currentColor" /> Run clustering
           </button>
         </div>
       </section>
@@ -271,28 +332,28 @@ export default function LocalPanel() {
       {result && (
         <section className="metrics">
           <div className="metric">
-            <b>{pct(result.metryki.trafnosc_oof)}</b>
-            <span>trafność (out-of-fold)</span>
+            <b>{pct(result.metrics.oof_accuracy)}</b>
+            <span>accuracy (out-of-fold)</span>
           </div>
           <div className="metric">
-            <b>{result.metryki.ari?.toFixed(3)}</b>
-            <span>ARI — chmura ma 0.885</span>
+            <b>{result.metrics.ari?.toFixed(3)}</b>
+            <span>ARI — cloud agents get 0.885</span>
           </div>
           <div className="metric">
-            <b>{pct(result.metryki.udzial_przyjetych)}</b>
-            <span>przypisane automatycznie</span>
+            <b>{pct(result.metrics.auto_assigned_share)}</b>
+            <span>assigned automatically</span>
           </div>
           <div className="metric">
-            <b>{pct(result.metryki.trafnosc_przyjetych)}</b>
-            <span>trafność automatycznych</span>
+            <b>{pct(result.metrics.auto_assigned_accuracy)}</b>
+            <span>accuracy of those</span>
           </div>
           <div className="metric warn">
-            <b>{doPrzegladu}</b>
-            <span>części do przeglądu</span>
+            <b>{reviewCount}</b>
+            <span>parts to review</span>
           </div>
           <div className="metric">
-            <b>{result.klastry.length}</b>
-            <span>klastrów ({result.metryki.n_klas} znanych)</span>
+            <b>{result.clusters.length}</b>
+            <span>clusters ({result.metrics.n_classes} known)</span>
           </div>
         </section>
       )}
@@ -302,27 +363,28 @@ export default function LocalPanel() {
           <aside className="cluster-list">
             <div className="section-head">
               <Cpu size={18} />
-              <h2>Klastry</h2>
+              <h2>Clusters</h2>
             </div>
             <button
-              className={filtrKlaster ? "chip" : "chip active"}
-              onClick={() => setFiltrKlaster(null)}
+              className={clusterFilter ? "chip" : "chip active"}
+              onClick={() => setClusterFilter(null)}
             >
-              wszystkie ({result.czesci.length} PN)
+              all ({result.parts.length} PN)
             </button>
             <div className="cluster-scroll">
-              {result.klastry.map((c) => (
+              {result.clusters.map((c) => (
                 <button
-                  key={c.nazwa}
+                  key={c.name}
                   className={
-                    filtrKlaster === c.nazwa ? "cluster-row active" : "cluster-row"
+                    clusterFilter === c.name ? "cluster-row active" : "cluster-row"
                   }
                   onClick={() =>
-                    setFiltrKlaster(filtrKlaster === c.nazwa ? null : c.nazwa)
+                    setClusterFilter(clusterFilter === c.name ? null : c.name)
                   }
+                  title={c.proposed ? "Proposed by discovery — needs your approval" : c.name}
                 >
                   <span className="cluster-name">
-                    {c.propozycja && <Sparkles size={13} />} {c.nazwa}
+                    {c.proposed && <Sparkles size={13} />} {c.name}
                   </span>
                   <span className="cluster-count">{c.n_pn}</span>
                 </button>
@@ -335,18 +397,18 @@ export default function LocalPanel() {
               <label className="search">
                 <Search size={15} />
                 <input
-                  placeholder="Szukaj po PN, opisie lub klastrze…"
-                  value={szukaj}
-                  onChange={(event) => setSzukaj(event.target.value)}
+                  placeholder="Search by part number, description or cluster…"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
                 />
               </label>
               <label className="switch-row">
                 <input
                   type="checkbox"
-                  checked={tylkoPrzeglad}
-                  onChange={(event) => setTylkoPrzeglad(event.target.checked)}
+                  checked={reviewOnly}
+                  onChange={(event) => setReviewOnly(event.target.checked)}
                 />
-                <span>tylko do przeglądu</span>
+                <span>review queue only</span>
               </label>
             </div>
 
@@ -354,49 +416,49 @@ export default function LocalPanel() {
               <table className="parts-table">
                 <thead>
                   <tr>
-                    <th>PN</th>
-                    <th>Opis</th>
-                    <th>Klaster</th>
-                    <th>Źródło</th>
-                    <th>Margines</th>
-                    <th>Przypnij na stałe</th>
+                    <th>Part number</th>
+                    <th>Description</th>
+                    <th>Cluster</th>
+                    <th>Assigned by</th>
+                    <th>Margin</th>
+                    <th>Pin permanently</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {widoczne.map((p) => {
-                    const przypiety = overrides[p.pn];
-                    const wKoszyku = koszyk[p.pn];
+                  {visible.map((p) => {
+                    const pinned = overrides[p.pn];
+                    const staged = pending[p.pn];
                     return (
-                      <tr key={p.pn} className={wKoszyku ? "pending" : ""}>
+                      <tr key={p.pn} className={staged ? "pending" : ""}>
                         <td className="mono">{p.pn}</td>
-                        <td className="desc" title={p.opis}>
-                          {p.opis}
+                        <td className="desc" title={p.description}>
+                          {p.description}
                         </td>
                         <td>
-                          {p.klaster}
-                          {przypiety && (
+                          {p.cluster}
+                          {pinned && (
                             <span className="badge pinned">
-                              <Pin size={11} /> przypięty
+                              <Pin size={11} /> pinned
                             </span>
                           )}
                         </td>
                         <td>
-                          <span className={`badge src-${p.zrodlo}`}>
-                            {p.zrodlo}
+                          <span className={`badge src-${p.source}`}>
+                            {p.source}
                           </span>
                         </td>
-                        <td className="mono">{p.pewnosc.toFixed(2)}</td>
+                        <td className="mono">{p.confidence.toFixed(2)}</td>
                         <td>
                           <input
-                            list="lista-klastrow"
+                            list="cluster-options"
                             className="pin-input"
-                            placeholder="wpisz lub wybierz…"
-                            value={wKoszyku ?? ""}
+                            placeholder="type or pick…"
+                            value={staged ?? ""}
                             onChange={(event) => {
-                              const v = event.target.value;
-                              setKoszyk((k) => {
-                                const next = { ...k };
-                                if (v.trim()) next[p.pn] = v;
+                              const value = event.target.value;
+                              setPending((current) => {
+                                const next = { ...current };
+                                if (value.trim()) next[p.pn] = value;
                                 else delete next[p.pn];
                                 return next;
                               });
@@ -408,47 +470,47 @@ export default function LocalPanel() {
                   })}
                 </tbody>
               </table>
-              <datalist id="lista-klastrow">
-                {nazwyKlastrow.map((n) => (
-                  <option key={n} value={n} />
+              <datalist id="cluster-options">
+                {clusterNames.map((name) => (
+                  <option key={name} value={name} />
                 ))}
               </datalist>
-              {!widoczne.length && (
-                <p className="empty">Brak części spełniających filtry.</p>
+              {!visible.length && (
+                <p className="empty">No parts match the current filters.</p>
               )}
             </div>
 
-            {Object.keys(koszyk).length > 0 && (
+            {Object.keys(pending).length > 0 && (
               <div className="basket">
                 <div className="basket-head">
                   <AlertTriangle size={16} />
                   <strong>
-                    {Object.keys(koszyk).length} korekt do zapisania
+                    {Object.keys(pending).length} correction(s) ready to save
                   </strong>
-                  <button className="link" onClick={() => setKoszyk({})}>
-                    <Trash2 size={13} /> wyczyść
+                  <button className="link" onClick={() => setPending({})}>
+                    <Trash2 size={13} /> clear
                   </button>
                 </div>
                 <ul>
-                  {Object.entries(koszyk).map(([pn, klaster]) => (
+                  {Object.entries(pending).map(([pn, cluster]) => (
                     <li key={pn}>
-                      <span className="mono">{pn}</span> → <b>{klaster}</b>
+                      <span className="mono">{pn}</span> → <b>{cluster}</b>
                     </li>
                   ))}
                 </ul>
                 <div className="actions">
                   <button
                     className="secondary"
-                    onClick={() => zapiszKorekty(false)}
+                    onClick={() => saveCorrections(false)}
                   >
-                    Zapisz bez douczania
+                    Save only
                   </button>
                   <button
                     className="primary"
                     disabled={run.state === "running"}
-                    onClick={() => zapiszKorekty(true)}
+                    onClick={() => saveCorrections(true)}
                   >
-                    <Pin size={16} /> Zapisz i doucz model
+                    <Pin size={16} /> Save and retrain
                   </button>
                 </div>
               </div>
@@ -459,15 +521,15 @@ export default function LocalPanel() {
 
       {!result && run.state !== "running" && (
         <p className="empty">
-          Brak wyniku. Uruchom klastrowanie, aby zobaczyć klastry i kolejkę do
-          przeglądu.
+          No results yet. Run the clustering to see clusters and the review
+          queue.
         </p>
       )}
 
       <div className="console">
         <div className="console-head">
           <span>
-            <Terminal size={16} /> Log toru lokalnego
+            <Terminal size={16} /> Local track log
           </span>
           <span className={`run-status ${run.state}`}>
             {statusIcon} {run.state}
@@ -476,7 +538,7 @@ export default function LocalPanel() {
         <pre>
           {run.output.length
             ? run.output.join("\n")
-            : "Gotowe do uruchomienia. Wyniki trafiają do agentic/wyniki/."}
+            : "Ready to run. Results are written to agentic/wyniki/."}
         </pre>
       </div>
     </div>

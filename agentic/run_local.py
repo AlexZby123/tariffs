@@ -127,7 +127,7 @@ def symulacja_nowych_typow(cfg: lc.KonfiguracjaHybrydy, pn_df: pd.DataFrame,
     model = lc.HybrydowyKlasyfikator(cfg).fit(P[m_znane].reset_index(drop=True),
                                               yy[m_znane], verbose=False)
     wynik = model.predict(P, verbose=False)
-    do_w2 = (wynik["zrodlo"] == lc.ZRODLO_ODKRYTY).values
+    do_w2 = (wynik["source"] == lc.ZRODLO_ODKRYTY).values
 
     nowe = ~m_znane
     met = {
@@ -163,33 +163,50 @@ def symulacja_nowych_typow(cfg: lc.KonfiguracjaHybrydy, pn_df: pd.DataFrame,
 
 def nazwij_odkryte(model: lc.HybrydowyKlasyfikator, wynik: pd.DataFrame,
                    metoda: str, verbose: bool = True) -> pd.DataFrame:
-    """ETAP 2: zamienia NOWY_1, NOWY_2... na proponowane nazwy typu funkcjonalnego."""
+    """STAGE 2: turns NEW_1, NEW_2... into proposed functional-type names."""
     if metoda == "brak":
         return wynik
     do_nazwania = wynik["cluster_name"].astype(str).str.startswith(lc.PREFIKS_NOWY)
     if not do_nazwania.any():
         return wynik
 
-    Z = client = None
-    if metoda == "llm":
-        from llm_client import LLMClient, wczytaj_config
-        client = LLMClient(wczytaj_config())
-        Z = model.enkoder_bazowy.transform(lc.buduj_teksty(wynik, model.cfg.pola))
+    def _nazwij(metoda_: str, Z_=None, client_=None) -> dict[str, str]:
+        return naming.nazwij_grupy(
+            wynik, kolumna_grupy="cluster_name", kolumna_opisu="MATDESC",
+            metoda=metoda_, Z=Z_, client=client_,
+            taksonomia=list(model.klasy_), tylko_prefiks=lc.PREFIKS_NOWY,
+        )
 
-    mapa = naming.nazwij_grupy(
-        wynik, kolumna_grupy="cluster_name", kolumna_opisu="MATDESC",
-        metoda=metoda, Z=Z, client=client,
-        taksonomia=list(model.klasy_), tylko_prefiks=lc.PREFIKS_NOWY,
-    )
+    client = None
+    if metoda == "llm":
+        # Nazywanie przez LLM jest podpiete na stale, wiec NIE MOZE wywrocic
+        # biegu. Brak config.yaml, wygasly token, padniety endpoint, zly JSON -
+        # wszystko spada na c-TF-IDF, ktore dziala offline. Uzytkownik dostaje
+        # komplet wynikow, tylko z gorszymi nazwami grup. Osłaniamy CALA probe,
+        # razem z samym wywolaniem sieciowym.
+        try:
+            from llm_client import LLMClient, wczytaj_config
+            client = LLMClient(wczytaj_config())
+            Z = model.enkoder_bazowy.transform(lc.buduj_teksty(wynik, model.cfg.pola))
+            mapa = _nazwij("llm", Z, client)
+        except Exception as e:  # noqa: BLE001
+            if verbose:
+                print(f"  [stage 2] cloud naming failed ({type(e).__name__}: "
+                      f"{str(e)[:110]})")
+                print("  [stage 2] falling back to offline c-TF-IDF naming")
+            metoda, client = "ctfidf", None
+            mapa = _nazwij("ctfidf")
+    else:
+        mapa = _nazwij(metoda)
     if verbose and mapa:
-        print(f"  [etap 2] nazwano {len(mapa)} grup metoda '{metoda}':")
+        print(f"  [stage 2] named {len(mapa)} groups using '{metoda}':")
         licz = wynik["cluster_name"].value_counts()
         for stara, nowa in sorted(mapa.items(), key=lambda kv: -licz.get(kv[0], 0))[:10]:
             print(f"      {stara:10s} (n={licz.get(stara, 0):3d})  ->  {nowa}")
         if len(mapa) > 10:
-            print(f"      ... i {len(mapa) - 10} wiecej")
+            print(f"      ... and {len(mapa) - 10} more")
         if client is not None:
-            print(f"  [etap 2] koszt LLM: {client.podsumowanie_kosztow()}")
+            print(f"  [stage 2] LLM cost: {client.podsumowanie_kosztow()}")
 
     wynik = wynik.copy()
     wynik["cluster_name"] = wynik["cluster_name"].replace(mapa)
@@ -205,11 +222,11 @@ def zapisz_wyniki(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
     """Zapisuje pliki w formacie zgodnym z reszta projektu i liczy metryki na wierszach."""
     out.mkdir(parents=True, exist_ok=True)
     mapa_nazw = dict(zip(wynik_pn["PN"].astype(str), wynik_pn["cluster_name"]))
-    mapa_zrodel = dict(zip(wynik_pn["PN"].astype(str), wynik_pn["zrodlo"]))
+    mapa_zrodel = dict(zip(wynik_pn["PN"].astype(str), wynik_pn["source"]))
 
     rek = rekordy.copy()
     rek["cluster_name"] = rek[dp.PN_KOL].astype(str).map(mapa_nazw).fillna(lc.ETYKIETA_PRZEGLAD)
-    rek["zrodlo"] = rek[dp.PN_KOL].astype(str).map(mapa_zrodel).fillna("brak")
+    rek["source"] = rek[dp.PN_KOL].astype(str).map(mapa_zrodel).fillna("none")
 
     kolejnosc = rek["cluster_name"].value_counts().index.tolist()
     mapa_id = {n: evaluate.litera(i) for i, n in enumerate(kolejnosc)}
@@ -219,9 +236,9 @@ def zapisz_wyniki(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
 
     wynik_pn.to_csv(out / "klastry_per_PN.csv", sep=";", index=False, encoding="utf-8")
     kols = [c for c in ["MAT_LANE_YM", dp.PN_KOL, "MATDESC", "HS Code First 6 ACDC",
-                        "BU SCND", "cluster", "cluster_name", "zrodlo"] if c in rek.columns]
+                        "BU SCND", "cluster", "cluster_name", "source"] if c in rek.columns]
     rek[kols].to_csv(out / "klastry_per_wiersz.csv", sep=";", index=False, encoding="utf-8")
-    (rek.groupby(["cluster", "cluster_name", "zrodlo"]).size()
+    (rek.groupby(["cluster", "cluster_name", "source"]).size()
         .reset_index(name="n_rekordow").sort_values("n_rekordow", ascending=False)
         .to_csv(out / "legenda_klastrow.csv", sep=";", index=False, encoding="utf-8"))
 
@@ -248,53 +265,53 @@ def zapisz_json(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
         pn = str(r["PN"])
         czesci.append({
             "pn": pn,
-            "opis": str(r.get("MATDESC", ""))[:300],
-            "klaster": str(r["cluster_name"]),
-            "zrodlo": str(r["zrodlo"]),
-            "pewnosc": round(float(r["pewnosc"]), 4),
+            "description": str(r.get("MATDESC", ""))[:300],
+            "cluster": str(r["cluster_name"]),
+            "source": str(r["source"]),
+            "confidence": round(float(r["confidence"]), 4),
             "hs6": str(r.get("HS6", "")),
             "bu": str(r.get("BU", "")),
-            "n_wierszy": int(wiersze_na_pn.get(pn, 0)),
+            "n_rows": int(wiersze_na_pn.get(pn, 0)),
         })
 
     agg = (wynik_pn.groupby("cluster_name")
-           .agg(n_pn=("PN", "size"), pewnosc_srednia=("pewnosc", "mean"))
+           .agg(n_pn=("PN", "size"), mean_confidence=("confidence", "mean"))
            .reset_index())
-    zrodla_na_klaster = (wynik_pn.groupby(["cluster_name", "zrodlo"]).size()
+    zrodla_na_klaster = (wynik_pn.groupby(["cluster_name", "source"]).size()
                          .unstack(fill_value=0).to_dict(orient="index"))
     klastry = [{
-        "nazwa": str(r["cluster_name"]),
+        "name": str(r["cluster_name"]),
         "n_pn": int(r["n_pn"]),
-        "n_wierszy": int(sum(wiersze_na_pn.get(c["pn"], 0) for c in czesci
-                             if c["klaster"] == r["cluster_name"])),
-        "pewnosc_srednia": round(float(r["pewnosc_srednia"]), 4),
-        "zrodla": {k: int(v) for k, v in zrodla_na_klaster.get(r["cluster_name"], {}).items()},
-        "propozycja": str(r["cluster_name"]).startswith(naming.PREFIKS_PROPOZYCJI)
-                      or str(r["cluster_name"]).startswith(lc.PREFIKS_NOWY),
+        "n_rows": int(sum(wiersze_na_pn.get(c["pn"], 0) for c in czesci
+                          if c["cluster"] == r["cluster_name"])),
+        "mean_confidence": round(float(r["mean_confidence"]), 4),
+        "sources": {k: int(v) for k, v in zrodla_na_klaster.get(r["cluster_name"], {}).items()},
+        "proposed": str(r["cluster_name"]).startswith(naming.PREFIKS_PROPOZYCJI)
+                    or str(r["cluster_name"]).startswith(lc.PREFIKS_NOWY),
     } for _, r in agg.sort_values("n_pn", ascending=False).iterrows()]
 
     dane = {
-        "wygenerowano": datetime.now().isoformat(timespec="seconds"),
-        "katalog": out.name,
-        "enkoder": model.cfg.encoder,
-        "nazywanie": args.nazywaj,
-        "taksonomia": sorted(str(k) for k in model.klasy_),
-        "metryki": {
-            "trafnosc_oof": round(oof.get("trafnosc", 0.0), 4),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "directory": out.name,
+        "encoder": model.cfg.encoder,
+        "naming": args.nazywaj,
+        "taxonomy": sorted(str(k) for k in model.klasy_),
+        "metrics": {
+            "oof_accuracy": round(oof.get("trafnosc", 0.0), 4),
             "ari": round(oof.get("ari", 0.0), 4),
             "pair_f1": round(oof.get("pair_f1", 0.0), 4),
             "nmi": round(oof.get("nmi", 0.0), 4),
-            "n_ocenianych": int(oof.get("n_ocenianych", 0)),
-            "prog_pewnosci": round(d.prog_pewnosci, 4),
-            "udzial_przyjetych": round(d.udzial_przyjetych, 4),
-            "trafnosc_przyjetych": round(d.trafnosc_przyjetych, 4),
-            "n_klas": d.n_klas,
-            "cel_trafnosci": model.cfg.cel_trafnosci,
+            "n_evaluated": int(oof.get("n_ocenianych", 0)),
+            "confidence_threshold": round(d.prog_pewnosci, 4),
+            "auto_assigned_share": round(d.udzial_przyjetych, 4),
+            "auto_assigned_accuracy": round(d.trafnosc_przyjetych, 4),
+            "n_classes": d.n_klas,
+            "accuracy_target": model.cfg.cel_trafnosci,
         },
-        "symulacja": {k: v for k, v in (sim or {}).items() if not k.startswith("_")},
-        "klastry": klastry,
-        "czesci": czesci,
-        "etykieta_przegladu": lc.ETYKIETA_PRZEGLAD,
+        "simulation": {k: v for k, v in (sim or {}).items() if not k.startswith("_")},
+        "clusters": klastry,
+        "parts": czesci,
+        "review_label": lc.ETYKIETA_PRZEGLAD,
     }
     tresc = json.dumps(dane, ensure_ascii=False, indent=1)
     (out / "wynik.json").write_text(tresc, encoding="utf-8")
@@ -347,17 +364,17 @@ def main() -> None:
         pary = {}
         for wpis in args.override:
             if "=" not in wpis:
-                raise SystemExit(f"Zly format --override: {wpis!r} (oczekiwano PN=KLASTER)")
+                raise SystemExit(f"Bad --override format: {wpis!r} (expected PN=CLUSTER)")
             pn, klaster = wpis.split("=", 1)
             pary[pn.strip()] = klaster.strip()
         n = lc.zapisz_override(pary)
-        print(f"Zapisano {len(pary)} korekt do {lc.OVERRIDES_PATH.name} "
-              f"(lacznie {n} wpisow).")
-        print("Uruchom ponownie bez --override, aby model nauczyl sie na poprawkach.")
+        print(f"Saved {len(pary)} correction(s) to {lc.OVERRIDES_PATH.name} "
+              f"({n} entries total).")
+        print("Run again without --override so the model learns from them.")
         return
 
     print("=" * 70)
-    print("  LOKALNE KLASTROWANIE HYBRYDOWE  (warstwy: override / klasyfikator / odkrywanie)")
+    print("  LOCAL HYBRID CLUSTERING  (layers: override / classifier / discovery)")
     print("=" * 70)
 
     cfg = lc.KonfiguracjaHybrydy(
@@ -368,73 +385,73 @@ def main() -> None:
         prog_odkrywania=args.prog_odkrywania,
     )
 
-    print("\n[0] Dane...")
+    print("\n[0] Loading data...")
     try:
         rekordy, pn_df, y, maska, rudolf = wczytaj(args)
     except FileNotFoundError as e:
-        raise SystemExit(f"  BLAD: {e}\n  Sprawdz pliki w data_to_cluster/.")
-    print(f"  wierszy={len(rekordy)}  PN={len(pn_df)}  "
-          f"PN z etykieta={int(maska.sum())}  klas={pd.Series(y[maska]).nunique()}")
+        raise SystemExit(f"  ERROR: {e}\n  Check the files in data_to_cluster/.")
+    print(f"  rows={len(rekordy)}  PN={len(pn_df)}  "
+          f"labelled PN={int(maska.sum())}  classes={pd.Series(y[maska]).nunique()}")
     if maska.sum() < 20:
-        raise SystemExit("  BLAD: za malo oznaczonych PN.")
+        raise SystemExit("  ERROR: too few labelled PN.")
 
     # --- predict-only ---
     if args.predict_only:
         if not lc.MODEL_PATH.exists():
-            raise SystemExit(f"  BLAD: brak zapisanego modelu ({lc.MODEL_PATH}).")
-        print(f"\n[*] Wczytuje model z {lc.MODEL_PATH.name}")
+            raise SystemExit(f"  ERROR: no saved model found ({lc.MODEL_PATH}).")
+        print(f"\n[*] Loading model from {lc.MODEL_PATH.name}")
         model = lc.HybrydowyKlasyfikator.wczytaj()
         wynik_pn = nazwij_odkryte(model, model.predict(pn_df), args.nazywaj)
         out = WYNIKI_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_local_predict"
         zapisz_wyniki(out, wynik_pn, rekordy, rudolf)
         zapisz_json(out, wynik_pn, rekordy, model, raport_oof_z_modelu(model), args)
-        print(f"  Wyniki -> {out.relative_to(KATALOG)}")
+        print(f"  Results -> {out.relative_to(KATALOG)}")
         return
 
-    print(f"\n[1] Trening warstwy 1 (enkoder: {cfg.encoder})...")
+    print(f"\n[1] Training layer 1 (encoder: {cfg.encoder})...")
     model = lc.HybrydowyKlasyfikator(cfg).fit(
         pn_df[maska].reset_index(drop=True), y[maska], n_folds=args.folds)
 
-    print("\n[2] Uczciwa ewaluacja (out-of-fold)...")
+    print("\n[2] Honest evaluation (out-of-fold)...")
     oof = raport_oof(model)
-    print(f"  warstwa 1 (OOF, {oof['n_ocenianych']} PN): trafnosc={oof['trafnosc']:.3f}  "
+    print(f"  layer 1 (OOF, {oof['n_ocenianych']} PN): accuracy={oof['trafnosc']:.3f}  "
           f"ARI={oof['ari']:.3f}  pair_f1={oof['pair_f1']:.3f}  NMI={oof['nmi']:.3f}")
 
-    tabela = [("warstwa 1: klasyfikator (OOF)", oof["ari"], oof["pair_f1"])]
+    tabela = [("layer 1: classifier (OOF)", oof["ari"], oof["pair_f1"])]
     if args.porownaj:
         nien = raport_nienadzorowany(model, pn_df, y, maska)
-        print(f"  czyste klastrowanie (bez etykiet):      ARI={nien['ari']:.3f}  "
+        print(f"  pure clustering (no labels):            ARI={nien['ari']:.3f}  "
               f"pair_f1={nien['pair_f1']:.3f}")
-        tabela.insert(0, ("czyste klastrowanie (bez etykiet)", nien["ari"], nien["pair_f1"]))
+        tabela.insert(0, ("pure clustering (no labels)", nien["ari"], nien["pair_f1"]))
 
     sim = {}
     if args.sim_nowe:
-        print(f"\n[3] Symulacja nowych typow (ukrywam ~{args.sim_nowe:.0%} klas)...")
+        print(f"\n[3] New-type simulation (hiding ~{args.sim_nowe:.0%} of classes)...")
         sim = symulacja_nowych_typow(cfg, pn_df, y, maska, args.sim_nowe, cfg.seed,
                                      metoda_nazywania=args.nazywaj)
         if sim:
-            print(f"  ukrytych klas={sim['n_klas_ukrytych']} ({sim['n_pn_nowych']} PN)")
-            print(f"  nowe typy skierowane do warstwy 2: {sim['wykryte_jako_nowe']:.1%}")
-            print(f"  falszywy alarm na znanych typach:  {sim['falszywy_alarm']:.1%}")
+            print(f"  hidden classes={sim['n_klas_ukrytych']} ({sim['n_pn_nowych']} PN)")
+            print(f"  new types routed to layer 2:      {sim['wykryte_jako_nowe']:.1%}")
+            print(f"  false alarm on known types:      {sim['falszywy_alarm']:.1%}")
             if "w1_trafnosc_przyjetych" in sim:
-                print(f"  trafnosc warstwy 1 na przyjetych:  "
+                print(f"  layer 1 accuracy on accepted:    "
                       f"{sim['w1_trafnosc_przyjetych']:.3f}")
             if "w2_pair_precision" in sim:
-                print(f"  warstwa 2 na nowych typach: pair_precision="
+                print(f"  layer 2 on new types: pair_precision="
                       f"{sim['w2_pair_precision']:.3f}  pair_f1={sim['w2_pair_f1']:.3f}")
             if "nazwy_trafnosc_czesci" in sim:
-                print(f"  etap 2 - nazwy trafiaja w prawdziwy typ: "
-                      f"{sim['nazwy_trafnosc_czesci']:.1%} czesci / "
-                      f"{sim['nazwy_trafnosc_grup']:.1%} grup")
+                print(f"  stage 2 - names matching the true type: "
+                      f"{sim['nazwy_trafnosc_czesci']:.1%} of parts / "
+                      f"{sim['nazwy_trafnosc_grup']:.1%} of groups")
         else:
-            print("  (za malo danych na sensowna symulacje)")
+            print("  (not enough data for a meaningful simulation)")
 
-    print("\n[4] Przypisanie wszystkich PN + zapis...")
+    print("\n[4] Assigning all PN + saving...")
     wynik_pn = model.predict(pn_df)
     wynik_pn = nazwij_odkryte(model, wynik_pn, args.nazywaj)
-    rozklad = wynik_pn["zrodlo"].value_counts().to_dict()
-    print(f"  zrodla przypisan: {rozklad}")
-    print(f"  klastrow lacznie: {wynik_pn['cluster_name'].nunique()}")
+    rozklad = wynik_pn["source"].value_counts().to_dict()
+    print(f"  assignment sources: {rozklad}")
+    print(f"  clusters in total: {wynik_pn['cluster_name'].nunique()}")
 
     out = WYNIKI_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_local_{cfg.encoder.replace(':', '-')}"
     met_wiersze = zapisz_wyniki(out, wynik_pn, rekordy, rudolf)
@@ -443,12 +460,12 @@ def main() -> None:
 
     zapisz_podsumowanie(out / "podsumowanie.txt", cfg, model, oof, tabela, sim,
                         met_wiersze, rozklad)
-    print(f"  wyniki -> {out.relative_to(KATALOG)}")
+    print(f"  results -> {out.relative_to(KATALOG)}")
     if met_wiersze:
-        print(f"\n  UWAGA: metryki w ewaluacja.txt licza sie na wierszach dla modelu "
-              f"dotrenowanego\n  na WSZYSTKICH etykietach - sa zawyzone. Miarodajne sa "
-              f"liczby OOF powyzej.")
-    print("\nGotowe.")
+        print("\n  NOTE: metrics in ewaluacja.txt are computed on rows for a model "
+              "refitted\n  on ALL labels - they are inflated. The OOF numbers above "
+              "are the reliable ones.")
+    print("\nDone.")
 
 
 def zapisz_podsumowanie(sciezka: Path, cfg, model, oof, tabela, sim, met_wiersze, rozklad):

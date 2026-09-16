@@ -55,9 +55,9 @@ MODEL_PATH = MODELS_DIR / "hybryda.pkl"
 
 ZRODLO_OVERRIDE = "override"
 ZRODLO_MODEL = "model"
-ZRODLO_ODKRYTY = "odkryty"
-PREFIKS_NOWY = "NOWY_"
-ETYKIETA_PRZEGLAD = "DO_PRZEGLADU"
+ZRODLO_ODKRYTY = "discovered"
+PREFIKS_NOWY = "NEW_"
+ETYKIETA_PRZEGLAD = "NEEDS_REVIEW"
 
 
 # --------------------------------------------------------------------------- #
@@ -322,8 +322,8 @@ class HybrydowyKlasyfikator:
             z_override = trafione.notna().values
             y[z_override] = trafione[z_override].values
             if verbose and z_override.sum():
-                print(f"  [warstwa 0] {int(z_override.sum())} PN z overrides.yaml "
-                      f"wlaczonych do treningu")
+                print(f"  [layer 0] {int(z_override.sum())} PN from overrides.yaml "
+                      f"included in training")
 
         # Klasy zbyt rzadkie, by czegokolwiek nauczyc - ALE decyzja eksperta
         # zawsze wchodzi do treningu, nawet jako jedyny przyklad swojej klasy.
@@ -336,13 +336,13 @@ class HybrydowyKlasyfikator:
         dosc = np.array([licznosc[v] >= cfg.min_probek_klasy or v in klasy_eksperta
                          for v in y])
         if dosc.sum() < len(y) and verbose:
-            print(f"  [warstwa 1] pomijam {int((~dosc).sum())} PN z klas o licznosci "
-                  f"< {cfg.min_probek_klasy}")
+            print(f"  [layer 1] skipping {int((~dosc).sum())} PN from classes with fewer "
+                  f"than {cfg.min_probek_klasy} members")
         df_t, y_t = df[dosc].reset_index(drop=True), y[dosc]
 
         teksty = buduj_teksty(df_t, cfg.pola)
         if verbose:
-            print(f"  [enkoder] {cfg.encoder} na {len(teksty)} tekstach...")
+            print(f"  [encoder] {cfg.encoder} on {len(teksty)} texts...")
         self.enkoder = zbuduj_enkoder(cfg.encoder, seed=cfg.seed)
         Z = (self.enkoder.fit_transform(teksty, y_t)
              if self.enkoder.wymaga_etykiet else self.enkoder.fit_transform(teksty))
@@ -355,8 +355,8 @@ class HybrydowyKlasyfikator:
         # foldzie - inaczej embedding widzialby etykiety walidacyjne.
         if self.enkoder.wymaga_etykiet:
             if verbose:
-                print(f"  [warstwa 1] OOF z re-treningiem enkodera w {n_folds} foldach "
-                      f"(wolniejsze, ale bez przecieku etykiet)...")
+                print(f"  [layer 1] out-of-fold with encoder re-training across {n_folds} folds "
+                      f"(slower, but no label leakage)...")
             pred, marg, maska = ocena_oof(
                 y_t, n_folds=n_folds, C=cfg.C, seed=cfg.seed, teksty=teksty,
                 enkoder_fn=lambda: zbuduj_enkoder(cfg.encoder, seed=cfg.seed))
@@ -379,7 +379,7 @@ class HybrydowyKlasyfikator:
             marg_final = _margines(self.klasyfikator.decision_function(Z))
             self.prog = float(np.quantile(marg_final, 1.0 - max(przyjete.mean(), 1e-9)))
             if verbose:
-                print(f"  [warstwa 1] prog przeniesiony przez kwantyl pokrycia "
+                print(f"  [layer 1] threshold transferred via coverage quantile "
                       f"({przyjete.mean():.1%}): {prog_oof:.3f} -> {self.prog:.3f}")
 
         self.diagnostyka = WynikDopasowania(
@@ -393,19 +393,19 @@ class HybrydowyKlasyfikator:
         )
         if verbose:
             d = self.diagnostyka
-            print(f"  [warstwa 1] OOF trafnosc={d.trafnosc_oof:.3f} | prog marginesu="
-                  f"{d.prog_pewnosci:.3f} -> przyjmuje {d.udzial_przyjetych:.1%} czesci "
-                  f"z trafnoscia {d.trafnosc_przyjetych:.3f}")
+            print(f"  [layer 1] OOF accuracy={d.trafnosc_oof:.3f} | margin threshold="
+                  f"{d.prog_pewnosci:.3f} -> accepts {d.udzial_przyjetych:.1%} of parts "
+                  f"at accuracy {d.trafnosc_przyjetych:.3f}")
         return self
 
     # ------------------------------------------------------------ predict ---
     def predict(self, df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
-        """Przypisuje klastry. Zwraca df z kolumnami cluster_name / zrodlo / pewnosc.
+        """Przypisuje klastry. Zwraca df z kolumnami cluster_name / source / confidence.
 
         WARSTWA 2 jest transduktywna - klastruje caly przekazany zbior reszty
         naraz, wiec wynik zalezy od tego, co jeszcze jest w batchu.
         """
-        assert self.klasyfikator is not None, "Najpierw fit()."
+        assert self.klasyfikator is not None, "Call fit() first."
         cfg = self.cfg
         out = df.reset_index(drop=True).copy()
         n = len(out)
@@ -454,10 +454,10 @@ class HybrydowyKlasyfikator:
             zrodla[idx_reszta] = ZRODLO_ODKRYTY
             pewnosc[idx_reszta] = marg[~pewne]
             if verbose:
-                print(f"  [warstwa 2] {len(idx_reszta)} niepewnych czesci -> "
-                      f"{len(duze)} grup kandydackich + "
+                print(f"  [layer 2] {len(idx_reszta)} uncertain parts -> "
+                      f"{len(duze)} candidate groups + "
                       f"{int((np.array(nazwy[idx_reszta]) == ETYKIETA_PRZEGLAD).sum())} "
-                      f"pojedynczych do przegladu")
+                      f"singletons for review")
         return self._zloz(out, nazwy, zrodla, pewnosc)
 
     def _odkryj(self, Z: np.ndarray) -> np.ndarray:
@@ -472,8 +472,8 @@ class HybrydowyKlasyfikator:
     @staticmethod
     def _zloz(out, nazwy, zrodla, pewnosc) -> pd.DataFrame:
         out["cluster_name"] = nazwy
-        out["zrodlo"] = zrodla
-        out["pewnosc"] = pewnosc
+        out["source"] = zrodla
+        out["confidence"] = pewnosc
         return out
 
     # --------------------------------------------------------------- IO ----

@@ -33,8 +33,8 @@ def wczytaj_config(sciezka: Path | None = None) -> dict:
     sciezka = sciezka or (KATALOG / "config.yaml")
     if not sciezka.exists():
         raise FileNotFoundError(
-            f"Brak {sciezka.name}. Skopiuj config.example.yaml -> config.yaml "
-            f"i wklej token Model Farm."
+            f"Missing {sciezka.name}. Copy config.example.yaml -> config.yaml "
+            f"and paste your Model Farm token (or save it from the UI)."
         )
     with open(sciezka, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -101,7 +101,7 @@ def wyciagnij_json(txt: str) -> Any:
         poz = [p for p in parsed if isinstance(p, dict) and "id" in p]
         if poz:
             return {"assignments": poz}
-        raise ValueError(f"Nie udalo sie sparsowac JSON z odpowiedzi LLM:\n{txt[:500]}")
+        raise ValueError(f"Could not parse JSON from the LLM response:\n{txt[:500]}")
 
 
 # ============================================================
@@ -139,13 +139,13 @@ class LLMClient:
         """
         key = self.cfg.get("api_key", "")
         if not key or "PASTE" in key:
-            raise ValueError("Ustaw api_key (token Bosch Model Farm) w config.yaml")
+            raise ValueError("Set api_key (Bosch Model Farm token) in config.yaml")
 
         from openai import OpenAI
         base = str(self.cfg.get("base_url", "https://aoai-farm.bosch-temp.com/api")).rstrip("/")
         deployment = self.cfg.get("deployment") or self.cfg.get("model")
         if not deployment:
-            raise ValueError("Ustaw 'deployment' (nazwa deploymentu w Model Farm) w config.yaml")
+            raise ValueError("Set 'deployment' (the Model Farm deployment name) in config.yaml")
         api_version = self.cfg.get("api_version", "2025-04-01-preview")
 
         # 'model' w ciele zapytania: dla OpenAI = deployment; dla Gemini np. 'google/gemini-2.5-flash-lite'
@@ -161,7 +161,7 @@ class LLMClient:
     # --- polaczenie testowe ---
     def check(self) -> str:
         if self.provider == "mock":
-            return "mock OK (offline, bez tokenu)"
+            return "mock OK (offline, no token needed)"
         odp = self.chat_text("You are a healthcheck.", "Reply with the single word: OK")
         return f"{self.provider} / {self.model} -> {odp.strip()[:40]}"
 
@@ -231,13 +231,13 @@ class LLMClient:
                     use_reasoning = False; continue
                 proba += 1
                 czekaj = min(2 ** proba, 30)
-                print(f"    [retry {proba}/{self.max_retries}] {str(e)[:120]} -> czekam {czekaj}s")
+                print(f"    [retry {proba}/{self.max_retries}] {str(e)[:120]} -> waiting {czekaj}s")
                 time.sleep(czekaj)
-        raise RuntimeError(f"LLM nieosiagalny po {self.max_retries} probach: {ostatni_blad}")
+        raise RuntimeError(f"LLM unreachable after {self.max_retries} attempt(s): {ostatni_blad}")
 
     def podsumowanie_kosztow(self) -> str:
-        return (f"provider={self.provider}  zapytan={self.calls}  "
-                f"tokeny_wej={self.tokens_in}  tokeny_wyj={self.tokens_out}")
+        return (f"provider={self.provider}  requests={self.calls}  "
+                f"tokens_in={self.tokens_in}  tokens_out={self.tokens_out}")
 
 
 # ============================================================
@@ -279,7 +279,7 @@ _MOCK_MAPA = [
     ("hydraulic", "HYDRAULIC UNIT"),
     ("coil", "COIL / MAGNET"), ("magnet", "COIL / MAGNET"),
 ]
-_MOCK_TAXONOMIA = sorted({n for _, n in _MOCK_MAPA} | {"INNE"})
+_MOCK_TAXONOMIA = sorted({n for _, n in _MOCK_MAPA} | {"OTHER"})
 
 
 def _mock_klasyfikuj_opis(opis: str) -> str:
@@ -287,7 +287,7 @@ def _mock_klasyfikuj_opis(opis: str) -> str:
     for slowo, klaster in _MOCK_MAPA:
         if slowo in o:
             return klaster
-    return "INNE"
+    return "OTHER"
 
 
 def _mock_odpowiedz(system: str, user: str, json_mode: bool = True) -> str:
@@ -306,8 +306,8 @@ def _mock_odpowiedz(system: str, user: str, json_mode: bool = True) -> str:
             # nazwa grupy = najczestsza propozycja z heurystyki dla jej probek
             glosy = [_mock_klasyfikuj_opis(l.strip(" -\t")) for l in blok.splitlines()
                      if l.strip(" -\t")]
-            sensowne = [g for g in glosy if g != "INNE"] or glosy
-            naj = max(set(sensowne), key=sensowne.count) if sensowne else "INNE"
+            sensowne = [g for g in glosy if g != "OTHER"] or glosy
+            naj = max(set(sensowne), key=sensowne.count) if sensowne else "OTHER"
             nazwy.append({"group": gid, "name": naj})
         return json.dumps({"names": nazwy})
     # zadanie: klasyfikacja partii - linie [id] ... desc="..."

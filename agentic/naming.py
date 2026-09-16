@@ -31,7 +31,7 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
-PREFIKS_PROPOZYCJI = "NOWY: "
+PREFIKS_PROPOZYCJI = "NEW: "
 
 #: Slowa zbyt ogolne, by odroznic jeden typ czesci od drugiego.
 STOP_TECHNICZNE = {
@@ -90,7 +90,7 @@ def nazwij_ctfidf(grupy: dict[str, Sequence[str]], n_slow: int = 2) -> dict[str,
             najlepsze.append(termin)
             if len(najlepsze) >= n_slow:
                 break
-        nazwy[g] = PREFIKS_PROPOZYCJI + (" ".join(najlepsze).upper() or "NIEROZPOZNANE")
+        nazwy[g] = PREFIKS_PROPOZYCJI + (" ".join(najlepsze).upper() or "UNRECOGNISED")
     return nazwy
 
 
@@ -174,7 +174,7 @@ def rozroznij_kolizje(nazwy: dict[str, str], licznosci: Optional[dict[str, int]]
 
     Warstwa 2 celowo woli rozdrobnic niz blednie skleic, wiec dwie osobne grupy
     NIE moga zniknac w jednym klastrze tylko dlatego, ze heurystyka (albo model)
-    nazwala je tak samo. Ekspert widzi "NOWY: BUSHING (1)" i "NOWY: BUSHING (2)"
+    nazwala je tak samo. Ekspert widzi "NEW: BUSHING (1)" i "NEW: BUSHING (2)"
     i sam decyduje, czy je scalic.
 
     Numeracja idzie od najliczniejszej grupy, zeby "(1)" bylo tym glownym wariantem.
@@ -235,7 +235,7 @@ def nazwij_grupy(wynik: pd.DataFrame, kolumna_grupy: str, kolumna_opisu: str,
 
     if metoda == "llm":
         if client is None:
-            raise ValueError("metoda='llm' wymaga argumentu client (LLMClient).")
+            raise ValueError("metoda='llm' requires the client argument (LLMClient).")
         grupy = {}
         for g in docelowe:
             maska = (ids == g).values
@@ -249,7 +249,7 @@ def nazwij_grupy(wynik: pd.DataFrame, kolumna_grupy: str, kolumna_opisu: str,
         nazwy.update(nazwij_ctfidf(brakujace))
         return rozroznij_kolizje(nazwy, licznosci)
 
-    raise ValueError(f"Nieznana metoda nazywania: {metoda!r} (ctfidf | llm | brak)")
+    raise ValueError(f"Unknown naming method: {metoda!r} (ctfidf | llm | brak)")
 
 
 # --------------------------------------------------------------------------- #

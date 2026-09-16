@@ -161,21 +161,58 @@ zadanie nazywania offline.
 
 ## 3a. Etap 3 — obsługa z UI (`workflow-ui`)
 
-Zakładka **Lokalne (hybryda)** daje pełną pętlę human-in-the-loop z przeglądarki:
+Zakładka **Local (hybrid)** daje pełną pętlę human-in-the-loop z przeglądarki. Interfejs
+jest po angielsku (tak jak zakładka chmurowa), podobnie jak komunikaty w oknie logu.
 
-- **Uruchomienie** z wyborem enkodera, metody nazywania, celu trafności i progu odkrywania.
+**Widok domyślny jest celowo minimalny** — pole na klucz API, rozwijane „Advanced settings"
+i przycisk uruchomienia. Dwie rzeczy są **zaszyte na stałe**, bo pomiary rozstrzygnęły,
+co jest najlepsze:
+
+| zaszyte | dlaczego |
+|---|---|
+| enkoder `tfidf` | wygrał pomiar: ARI 0.954 vs 0.937 dla `tfidf+supcon` |
+| nazywanie przez LLM | 1 zapytanie na cały bieg, koszt pomijalny |
+
+Pozostałe backendy **zostały w kodzie** i są dostępne z CLI (`run_local.py --encoder minilm`,
+`--nazywaj ctfidf` itd.) — zniknęły tylko z UI.
+
+### Co jest w „Advanced settings"
+
+- **Review workload** (`--cel-trafnosci`) — jak trafny musi być klasyfikator na tym, co
+  przypisuje sam. Bezpieczniej = mniej cichych pomyłek i lepsze wykrywanie nowych typów,
+  ale więcej części w kolejce. Przy domyślnym 0.999 klasyfikator nie pomylił się ani raz
+  na 83% części, które przyjął.
+- **Discovery threshold** (`--prog-odkrywania`) — jak daleko od siebie mogą być dwie części,
+  by trafić do jednej odkrytej grupy. Dotyczy **wyłącznie** kolejki do przeglądu, nigdy
+  części przypisanych przez klasyfikator.
+- **Part-number limit** (`--limit`) — tylko do szybkich testów. Bierze pierwsze N PN
+  w kolejności z pliku, a plik jest pogrupowany rodzinami produktów, więc mała próbka jest
+  mocno przekrzywiona (np. pierwsze 300 PN zawiera 18 sztuk VM-ESP, a w całości jest ich 386).
+  Przy ustawionym limicie ewaluacja na wierszach jest pomijana, bo etykiety Rudolfa są
+  wyrównane pozycyjnie z pełnym plikiem.
+
+### Klucz API
+
+Pole w zakładce zapisuje token do `agentic/config.yaml` (zakłada plik na bazie
+`config.example.yaml`, jeśli go nie ma). Klucz **nigdy nie wraca do przeglądarki** — UI
+dostaje tylko flagę `llmReady`. To ten sam plik, którego używa tor chmurowy.
+
+**Nazywanie przez LLM nie może wywrócić biegu.** Brak `config.yaml`, wygasły token, padnięty
+endpoint albo niepoprawny JSON — wszystko spada na offline'owe c-TF-IDF, a użytkownik dostaje
+komplet wyników, tylko z gorszymi nazwami grup. Osłonięte jest całe wywołanie, razem z częścią
+sieciową (zweryfikowane na realnym błędzie połączenia).
+
+### Reszta zakładki
+
 - **Kafelki metryk**: trafność OOF, ARI, udział przypisanych automatycznie, liczba części
   do przeglądu. To liczby out-of-fold, nie z danych treningowych.
 - **Lista klastrów** z licznością; grupy zaproponowane przez etap 2 mają ikonę iskierki.
 - **Tabela części** posortowana rosnąco po marginesie pewności — najbardziej wątpliwe są
-  na górze. Kolumna `źródło` pokazuje, która warstwa podjęła decyzję
-  (`model` / `odkryty` / `override`). Filtr „tylko do przeglądu" zawęża do kolejki eksperta.
-- **Przypięcie na stałe**: w każdym wierszu pole z podpowiedziami istniejących klastrów
+  na górze. Kolumna `Assigned by` pokazuje, która warstwa podjęła decyzję
+  (`model` / `discovered` / `override`). Filtr „review queue only" zawęża do kolejki eksperta.
+- **Pin permanently**: w każdym wierszu pole z podpowiedziami istniejących klastrów
   (można też wpisać zupełnie nową nazwę). Korekty zbierają się w koszyku, a przycisk
-  **„Zapisz i doucz model"** zapisuje je do `overrides.yaml` i od razu przelicza model.
-
-Nazywanie przez LLM włącza się samo, gdy `config.yaml` zawiera token — bez niego opcja
-jest wyszarzona, a reszta zakładki działa normalnie (tor lokalny nie potrzebuje chmury).
+  **„Save and retrain"** zapisuje je do `overrides.yaml` i od razu przelicza model.
 
 **Uwaga projektowa**: korekta eksperta wchodzi do treningu **zawsze**, nawet jako jedyny
 przykład swojej klasy (`min_probek_klasy` jej nie dotyczy). Bez tego przypięcie części do
