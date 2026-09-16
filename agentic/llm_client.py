@@ -167,11 +167,13 @@ class LLMClient:
 
     def chat_text(self, system: str, user: Any) -> str:
         if self.provider == "mock":
+            self.calls += 1
             return _mock_odpowiedz(system, user if isinstance(user, str) else str(user))
         return self._chat_with_retry(system, user, json_mode=False)
 
     def chat_json(self, system: str, user: Any) -> Any:
         if self.provider == "mock":
+            self.calls += 1
             return wyciagnij_json(_mock_odpowiedz(system, user if isinstance(user, str) else str(user), json_mode=True))
         txt = self._chat_with_retry(system, user, json_mode=True)
         return wyciagnij_json(txt)
@@ -234,8 +236,8 @@ class LLMClient:
         raise RuntimeError(f"LLM nieosiagalny po {self.max_retries} probach: {ostatni_blad}")
 
     def podsumowanie_kosztow(self) -> str:
-        return (f"zapytan={self.calls}  tokeny_wej={self.tokens_in}  "
-                f"tokeny_wyj={self.tokens_out}")
+        return (f"provider={self.provider}  zapytan={self.calls}  "
+                f"tokeny_wej={self.tokens_in}  tokeny_wyj={self.tokens_out}")
 
 
 # ============================================================
@@ -296,6 +298,18 @@ def _mock_odpowiedz(system: str, user: str, json_mode: bool = True) -> str:
     w galaz odkrywania taksonomii.
     """
     low = user.lower()
+    # zadanie: nazywanie grup (naming.nazwij_llm) - bloki GROUP "<id>" (...):
+    grupy = re.findall(r'GROUP "([^"]+)"[^\n]*\n((?:[ \t]+-[^\n]*\n?)+)', user)
+    if grupy:
+        nazwy = []
+        for gid, blok in grupy:
+            # nazwa grupy = najczestsza propozycja z heurystyki dla jej probek
+            glosy = [_mock_klasyfikuj_opis(l.strip(" -\t")) for l in blok.splitlines()
+                     if l.strip(" -\t")]
+            sensowne = [g for g in glosy if g != "INNE"] or glosy
+            naj = max(set(sensowne), key=sensowne.count) if sensowne else "INNE"
+            nazwy.append({"group": gid, "name": naj})
+        return json.dumps({"names": nazwy})
     # zadanie: klasyfikacja partii - linie [id] ... desc="..."
     linie = re.findall(r"\[(\d+)\][^\n]*?desc=\"(.*?)\"", user, flags=re.S)
     if linie:

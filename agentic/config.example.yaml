@@ -1,0 +1,34 @@
+# Wzor konfiguracji LLM. Skopiuj do config.yaml i uzupelnij token.
+# config.yaml jest w .gitignore - token NIGDY nie trafia do repozytorium.
+#
+# Tor LOKALNY (run_local.py --encoder tfidf) NIE potrzebuje tego pliku wcale.
+# Jest wymagany tylko dla:
+#   - toru chmurowego (run_clustering.py)
+#   - nazywania grup przez LLM (run_local.py --nazywaj llm)
+
+provider: bosch          # 'bosch' (Model Farm) | 'mock' (offline, bez tokenu)
+api_key: "PASTE_YOUR_BOSCH_MODEL_FARM_TOKEN_HERE"
+base_url: "https://aoai-farm.bosch-temp.com/api"
+api_version: "2025-04-01-preview"
+
+deployment: "gemini-3.5-flash"
+model: "google/gemini-3.5-flash"   # dla modeli OpenAI zostaw ""
+
+temperature: 0.0
+max_tokens: 8000
+request_timeout: 90
+max_retries: 5
+
+run:
+  limit: null            # ograniczenie liczby PN (null = calosc)
+  batch_size: 25         # liczba czesci w jednym zapytaniu
+  concurrency: 4         # liczba rownoleglych watkow
+  discovery_sample: 180  # liczba PN do probki odkrywania taksonomii
+
+taxonomy:
+  mode: discover         # discover | seed_from_rudolf | fixed_list
+  allow_new: true
+
+features:
+  use_capri: true
+  part_card: [desc, hs6, rbname, parttype, material_field, bu]

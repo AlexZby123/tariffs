@@ -75,6 +75,8 @@ flowchart TD
     D -- tak --> E["klaster ze znanej taksonomii<br/>źródło: model"]
     D -- nie --> F["WARSTWA 2 — agglomerative(cosine)<br/>na embeddingu BAZOWYM, próg odległości"]
     F --> G["NOWY_1, NOWY_2, ... / DO_PRZEGLADU<br/>źródło: odkryty"]
+    G --> N["ETAP 2 — nazwanie grup<br/>c-TF-IDF offline albo 1 zapytanie LLM"]
+    N --> H
     E --> H["WARSTWA 3 — ekspert poprawia"]
     G --> H
     H -- "run_local.py --override PN=KLASTER" --> B
@@ -119,6 +121,34 @@ ustawiony na **rozdrobnienie zamiast sklejania**:
 Eksperta łatwiej poprosić o scalenie dwóch czystych grupek niż o rozplątanie jednej błędnie
 sklejonej. Grupy poniżej `min_licznosc_nowego` dostają etykietę `DO_PRZEGLADU`.
 
+### Etap 2 — nazwanie odkrytych grup (`naming.py`)
+
+Warstwa 2 umie grupować, ale nie umie nazywać — grupy wychodzą jako `NOWY_1`, `NOWY_2`.
+Etap 2 zamienia numery na typy funkcjonalne. Dwie ścieżki, obie zaimplementowane:
+
+| metoda | jak działa | koszt | trafność nazw |
+|---|---|---|---|
+| `ctfidf` (domyślna) | class-based TF-IDF — terminy charakterystyczne dla grupy względem pozostałych grup | **0 zł, offline** | **77.2% części / 52.0% grup** |
+| `llm` | z każdej grupy 5 części najbliższych centroidowi → **jedno** zapytanie na wszystkie grupy | 1 zapytanie | do zmierzenia na Model Farm |
+
+„Trafność nazw" = odsetek części, których proponowana nazwa trafia w ich prawdziwy typ
+wg Rudolfa (kryterium tokenowe: `BALL BEARING` trafia w `BALL`, `GASKET SEAL` w `SEAL`).
+Liczone na symulacji ukrytych klas, więc model nie widział tych typów w treningu.
+Wynik po grupach jest niższy, bo małe grupki liczą się tak samo jak duże.
+
+**Koszt, zmierzony:** nazwanie 31 grup = **1 zapytanie**. Tor chmurowy klasyfikuje te same
+dane w partiach po 25 PN, czyli ~41 zapytań plus odkrywanie i konsolidacja taksonomii.
+W tokenach różnica jest jeszcze większa: etap 2 wysyła 5 krótkich próbek na grupę
+(~155 linii) zamiast pełnych part card dla wszystkich 1025 PN.
+
+Nazwy dostają prefiks `NOWY: `, żeby nie mieszały się z zatwierdzoną taksonomią — to
+**propozycje**, które ekspert akceptuje przez `--override`. Gdy dwie grupy dostaną tę samą
+nazwę, dopisywany jest numer (`NOWY: BUSHING (1)`, `(2)`) — dwie osobne grupy nie mogą
+zniknąć w jednym klastrze tylko dlatego, że heurystyka nazwała je tak samo.
+
+Ścieżkę `llm` można przetestować bez tokenu: `provider: mock` w `config.yaml` obsługuje
+zadanie nazywania offline.
+
 ### Wynik end-to-end (symulacja: 16 klas / 244 PN ukryte przed modelem)
 
 | miara | wynik |
@@ -127,6 +157,7 @@ sklejonej. Grupy poniżej `min_licznosc_nowego` dostają etykietę `DO_PRZEGLADU
 | fałszywy alarm na znanych typach | 6.3% |
 | trafność warstwy 1 na tym, co przyjęła | 0.996 |
 | jakość grupowania nowych typów (pair_precision) | 0.837 |
+| nazwy trafiające w prawdziwy typ (etap 2, `ctfidf`) | 77.2% części |
 
 ## 4. Użycie
 
@@ -138,6 +169,8 @@ python run_local.py --porownaj --sim-nowe 0.2   # z porównaniem torów i symula
 python run_local.py --encoder tfidf+supcon   # enkoder neuronowy (PyTorch, offline)
 python run_local.py --encoder minilm         # bi-encoder z HuggingFace
 python run_local.py --cel-trafnosci 0.98     # więcej automatyzacji, mniej odkrywania
+python run_local.py --nazywaj llm            # etap 2 przez LLM (1 zapytanie) zamiast c-TF-IDF
+python run_local.py --nazywaj brak           # zostaw surowe NOWY_1, NOWY_2
 python run_local.py --predict-only           # użyj zapisanego modelu
 
 # WARSTWA 3 — poprawka eksperta (trafia do overrides.yaml i uczy model)
@@ -163,9 +196,7 @@ pip install sentence-transformers    # backendy minilm / bge (pobiera model z Hu
 
 ## 6. Co dalej (roadmapa)
 
-- **[Etap 2] Nazywanie grup z warstwy 2**: 3–5 próbek najbliższych centroidowi z każdej grupy
-  `NOWY_n`, **jedno** zapytanie do LLM na wszystkie grupy naraz. Redukcja kosztów API >99%.
-  Dotyczy tylko ~17% części, więc to naprawdę tanie.
+- **[Etap 2] ✅ ZROBIONE** — `naming.py`, opis wyżej.
 - **[Etap 3] Integracja w `workflow-ui`**: podgląd klastrów z kolumną `zrodlo` i `pewnosc`,
   kolejka `DO_PRZEGLADU`, przycisk „przypnij na stałe" → `zapisz_override()` → re-trening.
 - **[Etap 4] `search_agent` jako ratunek**: dla części z `DO_PRZEGLADU` o enigmatycznym opisie
@@ -180,6 +211,7 @@ pip install sentence-transformers    # backendy minilm / bge (pobiera model z Hu
 |---|---|
 | `encoders.py` | wymienne enkodery: `tfidf`, `st:<model>`, `+supcon` (PyTorch) |
 | `local_clustering.py` | warstwy 0–3, dobór progu, zapis/odczyt modelu |
+| `naming.py` | etap 2: nazywanie grup (c-TF-IDF offline / 1 zapytanie LLM) + ocena nazw |
 | `run_local.py` | CLI, uczciwa ewaluacja OOF, symulacja nowych typów, zapis wyników |
 | `overrides.yaml` | słownik eksperta PN → klaster (warstwa 0 / 3) |
 | `data_prep.py` | wczytanie danych, deduplikacja do PN, part card |

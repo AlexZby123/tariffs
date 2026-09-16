@@ -6,6 +6,7 @@ CLI lokalnego klastrowania hybrydowego (bez chmury, bez LLM).
   python run_local.py --encoder tfidf+supcon   # z douczonym enkoderem neuronowym
   python run_local.py --encoder minilm         # bi-encoder z HuggingFace
   python run_local.py --sim-nowe 0.2           # symulacja: 20% klas jako "nowe typy"
+  python run_local.py --nazywaj llm            # ETAP 2: nazwij nowe grupy jednym zapytaniem
   python run_local.py --porownaj               # tabela porownawcza torow
   python run_local.py --predict-only           # uzyj zapisanego modelu
   python run_local.py --override 0204X00136=RESERVOIR CAP   # feedback eksperta
@@ -26,6 +27,7 @@ import pandas as pd
 import data_prep as dp
 import evaluate
 import local_clustering as lc
+import naming
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -96,7 +98,7 @@ def raport_nienadzorowany(model: lc.HybrydowyKlasyfikator, pn_df: pd.DataFrame,
 
 def symulacja_nowych_typow(cfg: lc.KonfiguracjaHybrydy, pn_df: pd.DataFrame,
                            y: np.ndarray, maska: np.ndarray, frakcja: float,
-                           seed: int = 0) -> dict:
+                           seed: int = 0, metoda_nazywania: str = "brak") -> dict:
     """Czy hybryda rozpoznaje typy, ktorych NIE widziala w treningu?
 
     Co n-ta klasa (wg licznosci) jest w calosci ukrywana przed warstwa 1.
@@ -130,12 +132,57 @@ def symulacja_nowych_typow(cfg: lc.KonfiguracjaHybrydy, pn_df: pd.DataFrame,
         met["w2_pair_precision"] = m2["pair_precision"]
         met["w2_pair_f1"] = m2["pair_f1"]
         met["w2_ari"] = m2["ari"]
+
+        # ETAP 2: czy nadane nazwy trafiaja w prawdziwy typ czesci?
+        if metoda_nazywania != "brak":
+            nazwane = nazwij_odkryte(model, wynik, metoda_nazywania, verbose=False)
+            on = naming.ocen_nazwy(wynik.loc[w2_nowe, "cluster_name"].values,
+                                   nazwane.loc[w2_nowe, "cluster_name"].values,
+                                   yy[w2_nowe])
+            met["nazwy_trafnosc_czesci"] = on["trafnosc_czesci"]
+            met["nazwy_trafnosc_grup"] = on["trafnosc_grup"]
+            met["_nazwy_szczegoly"] = on["szczegoly"]
     # trafnosc warstwy 1 na czesciach, ktore przyjela
     przyjete = m_znane & ~do_w2
     if przyjete.sum():
         met["w1_trafnosc_przyjetych"] = float(
             (wynik.loc[przyjete, "cluster_name"].values == yy[przyjete]).mean())
     return met
+
+
+def nazwij_odkryte(model: lc.HybrydowyKlasyfikator, wynik: pd.DataFrame,
+                   metoda: str, verbose: bool = True) -> pd.DataFrame:
+    """ETAP 2: zamienia NOWY_1, NOWY_2... na proponowane nazwy typu funkcjonalnego."""
+    if metoda == "brak":
+        return wynik
+    do_nazwania = wynik["cluster_name"].astype(str).str.startswith(lc.PREFIKS_NOWY)
+    if not do_nazwania.any():
+        return wynik
+
+    Z = client = None
+    if metoda == "llm":
+        from llm_client import LLMClient, wczytaj_config
+        client = LLMClient(wczytaj_config())
+        Z = model.enkoder_bazowy.transform(lc.buduj_teksty(wynik, model.cfg.pola))
+
+    mapa = naming.nazwij_grupy(
+        wynik, kolumna_grupy="cluster_name", kolumna_opisu="MATDESC",
+        metoda=metoda, Z=Z, client=client,
+        taksonomia=list(model.klasy_), tylko_prefiks=lc.PREFIKS_NOWY,
+    )
+    if verbose and mapa:
+        print(f"  [etap 2] nazwano {len(mapa)} grup metoda '{metoda}':")
+        licz = wynik["cluster_name"].value_counts()
+        for stara, nowa in sorted(mapa.items(), key=lambda kv: -licz.get(kv[0], 0))[:10]:
+            print(f"      {stara:10s} (n={licz.get(stara, 0):3d})  ->  {nowa}")
+        if len(mapa) > 10:
+            print(f"      ... i {len(mapa) - 10} wiecej")
+        if client is not None:
+            print(f"  [etap 2] koszt LLM: {client.podsumowanie_kosztow()}")
+
+    wynik = wynik.copy()
+    wynik["cluster_name"] = wynik["cluster_name"].replace(mapa)
+    return wynik
 
 
 # --------------------------------------------------------------------------- #
@@ -194,6 +241,9 @@ def parse_args() -> argparse.Namespace:
                    help="prog odleglosci kosinusowej w warstwie 2")
     p.add_argument("--pola", default="MATDESC",
                    help="kolumny part card sklejane w tekst, po przecinku")
+    p.add_argument("--nazywaj", default="ctfidf", choices=["ctfidf", "llm", "brak"],
+                   help="ETAP 2: jak nazwac grupy z warstwy 2. ctfidf = offline (dom.), "
+                        "llm = jedno zbiorcze zapytanie, brak = zostaw NOWY_n")
     p.add_argument("--sim-nowe", type=float, default=None, metavar="FRAKCJA",
                    help="symulacja nowych typow: ukryj te czesc klas przed warstwa 1")
     p.add_argument("--porownaj", action="store_true",
@@ -251,7 +301,7 @@ def main() -> None:
             raise SystemExit(f"  BLAD: brak zapisanego modelu ({lc.MODEL_PATH}).")
         print(f"\n[*] Wczytuje model z {lc.MODEL_PATH.name}")
         model = lc.HybrydowyKlasyfikator.wczytaj()
-        wynik_pn = model.predict(pn_df)
+        wynik_pn = nazwij_odkryte(model, model.predict(pn_df), args.nazywaj)
         out = WYNIKI_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_local_predict"
         zapisz_wyniki(out, wynik_pn, rekordy, rudolf)
         print(f"  Wyniki -> {out.relative_to(KATALOG)}")
@@ -276,7 +326,8 @@ def main() -> None:
     sim = {}
     if args.sim_nowe:
         print(f"\n[3] Symulacja nowych typow (ukrywam ~{args.sim_nowe:.0%} klas)...")
-        sim = symulacja_nowych_typow(cfg, pn_df, y, maska, args.sim_nowe, cfg.seed)
+        sim = symulacja_nowych_typow(cfg, pn_df, y, maska, args.sim_nowe, cfg.seed,
+                                     metoda_nazywania=args.nazywaj)
         if sim:
             print(f"  ukrytych klas={sim['n_klas_ukrytych']} ({sim['n_pn_nowych']} PN)")
             print(f"  nowe typy skierowane do warstwy 2: {sim['wykryte_jako_nowe']:.1%}")
@@ -287,11 +338,16 @@ def main() -> None:
             if "w2_pair_precision" in sim:
                 print(f"  warstwa 2 na nowych typach: pair_precision="
                       f"{sim['w2_pair_precision']:.3f}  pair_f1={sim['w2_pair_f1']:.3f}")
+            if "nazwy_trafnosc_czesci" in sim:
+                print(f"  etap 2 - nazwy trafiaja w prawdziwy typ: "
+                      f"{sim['nazwy_trafnosc_czesci']:.1%} czesci / "
+                      f"{sim['nazwy_trafnosc_grup']:.1%} grup")
         else:
             print("  (za malo danych na sensowna symulacje)")
 
     print("\n[4] Przypisanie wszystkich PN + zapis...")
     wynik_pn = model.predict(pn_df)
+    wynik_pn = nazwij_odkryte(model, wynik_pn, args.nazywaj)
     rozklad = wynik_pn["zrodlo"].value_counts().to_dict()
     print(f"  zrodla przypisan: {rozklad}")
     print(f"  klastrow lacznie: {wynik_pn['cluster_name'].nunique()}")
@@ -339,6 +395,8 @@ def zapisz_podsumowanie(sciezka: Path, cfg, model, oof, tabela, sim, met_wiersze
         if sim:
             f.write("C) SYMULACJA NOWYCH TYPOW (klasy ukryte przed warstwa 1)\n")
             for k, v in sim.items():
+                if k.startswith("_"):
+                    continue
                 f.write(f"   {k:24s} = {v:.3f}\n" if isinstance(v, float)
                         else f"   {k:24s} = {v}\n")
             f.write("\n")

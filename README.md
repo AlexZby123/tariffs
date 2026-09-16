@@ -48,6 +48,8 @@ tariff/
 │   ├── ARCHITEKTURA_LOKALNA.md    <- Architektura toru lokalnego + wszystkie pomiary
 │   ├── encoders.py                <- Wymienne enkodery: tfidf / MiniLM / BGE / +supcon (PyTorch)
 │   ├── local_clustering.py        <- Tor LOKALNY: warstwy override -> klasyfikator -> odkrywanie
+│   ├── naming.py                  <- Etap 2: nazywanie odkrytych grup (c-TF-IDF / 1 zapytanie LLM)
+│   ├── config.example.yaml        <- Wzór konfiguracji LLM (skopiuj do config.yaml)
 │   ├── run_local.py               <- CLI toru lokalnego (ewaluacja OOF, symulacja nowych typów)
 │   ├── overrides.yaml             <- Słownik eksperta PN -> klaster (human-in-the-loop)
 │   ├── agents.py                  <- Agenci LLM: Discovery, Consolidation, Classifier
@@ -124,6 +126,10 @@ Każda część przechodzi przez trzy warstwy i dostaje w wyniku kolumnę `zrodl
 | 2 | reszta → `AgglomerativeClustering(cosine)` → `NOWY_1`, `NOWY_2`… | `odkryty` |
 | 3 | poprawka eksperta wraca do warstwy 0 i uczy model | — |
 
+Grupy z warstwy 2 dostają na końcu nazwy (**Etap 2**, `naming.py`): domyślnie offline
+metodą c-TF-IDF (0 zł, 77% nazw trafia w prawdziwy typ części), opcjonalnie **jednym**
+zapytaniem do LLM na wszystkie grupy naraz — zmierzone: 1 zapytanie zamiast ~41.
+
 Próg warstwy 1 **dobiera się sam** (z predykcji out-of-fold) tak, by trafność przyjętych
 osiągnęła `--cel-trafnosci`. Domyślnie warstwa 1 przyjmuje ~83% części **bez ani jednego
 błędu**, a do eksperta trafia ~17% — w tym 4 na 5 faktycznie nowych typów części.
@@ -133,6 +139,7 @@ cd agentic
 python run_local.py                            # pełny przebieg + uczciwa ewaluacja OOF
 python run_local.py --porownaj --sim-nowe 0.2  # porównanie torów + symulacja nowych typów
 python run_local.py --encoder minilm           # bi-encoder z HuggingFace zamiast TF-IDF
+python run_local.py --nazywaj llm               # Etap 2: nazwij nowe grupy 1 zapytaniem
 python run_local.py --override "0204X00136=RESERVOIR CAP"   # poprawka eksperta
 ```
 
