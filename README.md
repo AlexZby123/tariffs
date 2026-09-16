@@ -49,6 +49,7 @@ tariff/
 │   ├── encoders.py                <- Wymienne enkodery: tfidf / MiniLM / BGE / +supcon (PyTorch)
 │   ├── local_clustering.py        <- Tor LOKALNY: warstwy override -> klasyfikator -> odkrywanie
 │   ├── naming.py                  <- Etap 2: nazywanie odkrytych grup (c-TF-IDF / 1 zapytanie LLM)
+│   ├── sprawdz_srodowisko.py      <- Sprawdza, czy dany interpreter ma potrzebne pakiety
 │   ├── config.example.yaml        <- Wzór konfiguracji LLM (skopiuj do config.yaml)
 │   ├── run_local.py               <- CLI toru lokalnego (ewaluacja OOF, symulacja nowych typów)
 │   ├── overrides.yaml             <- Słownik eksperta PN -> klaster (human-in-the-loop)
@@ -208,6 +209,19 @@ Wymagany Python 3.10+ oraz biblioteki:
 ```bash
 pip install -r agentic/requirements.txt
 ```
+
+**Najpierw sprawdź, czego brakuje w Twoim środowisku** — uruchom tym interpreterem,
+którego naprawdę używasz:
+```bash
+cd agentic
+"C:\Users\ZBA1WZ\.conda\envs\pandas_excel\python.exe" sprawdz_srodowisko.py
+```
+Skrypt wypisze, co jest, czego brakuje i gotowe polecenia `pip install`.
+
+Tor lokalny wymaga tylko: `pandas`, `numpy`, `scikit-learn`, `scipy`, `PyYAML`, `openpyxl`.
+Pakiety `torch` (dla `--encoder tfidf+supcon`), `sentence-transformers` (dla `minilm`/`bge`)
+i `openai` (tor chmurowy, `--nazywaj llm`) są importowane **leniwie** — potrzebne dopiero
+przy użyciu danego trybu. `lightgbm` **nie jest już wymagany**.
 > [!NOTE]
 > Na tej maszynie w pełni skonfigurowane środowisko conda zawierające wszystkie pakiety (`openai`, `pandas`, `scikit-learn`, `scipy`, `openpyxl`, `pyyaml`) to:
 > `C:\Users\ZBA1WZ\.conda\envs\pandas_excel\python.exe`
@@ -299,6 +313,7 @@ W razie ponownego uruchomienia asystenta AI w tym projekcie:
 2. **Interpreter Pythona**:
    - Domyślny Anaconda base nie ma `pandas` i `openai`.
    - Środowisko z kompletem zainstalowanych pakietów ML to: `C:\Users\ZBA1WZ\.conda\envs\pandas_excel\python.exe`.
+   - Przed pracą zweryfikuj je: `python sprawdz_srodowisko.py` (uruchom TYM interpreterem).
    - W `workflow-ui/src/lib/workflow.ts` można ustawić zmienną środowiskową `PYTHON_EXECUTABLE="C:\\Users\\ZBA1WZ\\.conda\\envs\\pandas_excel\\python.exe"`.
 3. **Klucze i autoryzacja**:
    - Tokeny API nie są commitowane w gicie (są w `agentic/config.yaml`).

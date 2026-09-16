@@ -10,7 +10,13 @@ openpyxl>=3.1        # zapis/odczyt .xlsx (badania/buduj_excel_roznic.py, etykie
 # pyodbc>=5.0
 
 # --- Lokalne klastrowanie hybrydowe (run_local.py) ---
-# Rdzen (--encoder tfidf) dziala na pakietach powyzej, bez dodatkow.
-# Opcjonalnie:
-# torch>=2.0                  # backend --encoder tfidf+supcon (siec metryczna)
-# sentence-transformers>=3.0  # backendy --encoder minilm / bge (pobiera model z HuggingFace)
+# Tor lokalny NIE potrzebuje zadnych dodatkowych pakietow poza powyzszymi
+# (numpy dociagane jest razem z pandas). lightgbm NIE jest juz wymagany -
+# warstwa 1 uzywa LinearSVC ze scikit-learn.
+#
+# Opcjonalne, importowane leniwie - tylko gdy uzyjesz danego trybu:
+# torch>=2.0                  # --encoder tfidf+supcon (siec metryczna)
+# sentence-transformers>=3.0  # --encoder minilm / bge (pobiera model z HuggingFace)
+#
+# Sprawdzenie, czego brakuje w TWOIM srodowisku:
+#   python sprawdz_srodowisko.py
