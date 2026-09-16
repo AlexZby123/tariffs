@@ -8,3 +8,9 @@ openpyxl>=3.1        # zapis/odczyt .xlsx (badania/buduj_excel_roznic.py, etykie
 
 # Tylko dla badania/build_descplus.py (pobieranie opisow z bazy DALI przez SQL Server):
 # pyodbc>=5.0
+
+# --- Lokalne klastrowanie hybrydowe (run_local.py) ---
+# Rdzen (--encoder tfidf) dziala na pakietach powyzej, bez dodatkow.
+# Opcjonalnie:
+# torch>=2.0                  # backend --encoder tfidf+supcon (siec metryczna)
+# sentence-transformers>=3.0  # backendy --encoder minilm / bge (pobiera model z HuggingFace)

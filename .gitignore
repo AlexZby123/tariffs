@@ -13,6 +13,7 @@ venv/
 agentic/config.yaml
 agentic/cache/
 agentic/wyniki/
+agentic/models/
 search_agent/cache/
 
 # Node

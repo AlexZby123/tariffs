@@ -8,12 +8,13 @@ Projekt służy do automatycznego klastrowania części motoryzacyjnych i przemy
 1. [Przegląd projektu i cel](#przegląd-projektu-i-cel)
 2. [Struktura repozytorium](#struktura-repozytorium)
 3. [Architektura agentowa (`agentic/`)](#architektura-agentowa-agentic)
-4. [Ewaluacja i metryki (`evaluate.py`)](#ewaluacja-i-metryki-evaluatepy)
-5. [Interfejs graficzny (`workflow-ui/`)](#interfejs-graficzny-workflow-ui)
-6. [Środowisko i zależności](#środowisko-i-zależności)
-7. [Konfiguracja (`config.yaml`)](#konfiguracja-configyaml)
-8. [Uruchamianie z CLI](#uruchamianie-z-cli)
-9. [Ściąga dla agentów AI / wznowienia sesji](#ściąga-dla-agentów-ai--wznowienia-sesji)
+4. [Lokalne klastrowanie bez chmury (`run_local.py`)](#lokalne-klastrowanie-bez-chmury-run_localpy)
+5. [Ewaluacja i metryki (`evaluate.py`)](#ewaluacja-i-metryki-evaluatepy)
+6. [Interfejs graficzny (`workflow-ui/`)](#interfejs-graficzny-workflow-ui)
+7. [Środowisko i zależności](#środowisko-i-zależności)
+8. [Konfiguracja (`config.yaml`)](#konfiguracja-configyaml)
+9. [Uruchamianie z CLI](#uruchamianie-z-cli)
+10. [Ściąga dla agentów AI / wznowienia sesji](#ściąga-dla-agentów-ai--wznowienia-sesji)
 
 ---
 
@@ -43,7 +44,12 @@ tariff/
 │   ├── pipeline.py                <- Orkiestrator workflow (pojedynczy i batch)
 │   ├── cli.py                     <- Interfejs wiersza poleceń CLI
 │   └── test_agent.py              <- Testy jednostkowe i integracyjne
-├── agentic/                       <- Pipeline klastrowania agentowego w Pythonie
+├── agentic/                       <- Pipeline klastrowania (chmurowy + lokalny)
+│   ├── ARCHITEKTURA_LOKALNA.md    <- Architektura toru lokalnego + wszystkie pomiary
+│   ├── encoders.py                <- Wymienne enkodery: tfidf / MiniLM / BGE / +supcon (PyTorch)
+│   ├── local_clustering.py        <- Tor LOKALNY: warstwy override -> klasyfikator -> odkrywanie
+│   ├── run_local.py               <- CLI toru lokalnego (ewaluacja OOF, symulacja nowych typów)
+│   ├── overrides.yaml             <- Słownik eksperta PN -> klaster (human-in-the-loop)
 │   ├── agents.py                  <- Agenci LLM: Discovery, Consolidation, Classifier
 │   ├── config.example.yaml        <- Wzór konfiguracji (endpointy, modele, tokeny)
 │   ├── data_prep.py               <- Wczytywanie danych, deduplikacja PN, budowa "part card"
@@ -103,6 +109,36 @@ Funkcja `part_card()` w `data_prep.py` formuje zwarty rekord tekstowy dla modelu
 - `bu=...` – jednostka biznesowa.
 
 ---
+
+## 💻 Lokalne klastrowanie bez chmury (`run_local.py`)
+
+Drugi, **w pełni lokalny** tor: bez LLM, bez tokenów, bez sieci. Na tym zbiorze
+**bije tor chmurowy** (ARI 0.954 vs 0.885) i liczy się w sekundy na zwykłym CPU.
+
+Każda część przechodzi przez trzy warstwy i dostaje w wyniku kolumnę `zrodlo`:
+
+| warstwa | mechanizm | źródło |
+|---|---|---|
+| 0 | `overrides.yaml` — słownik eksperta, 100% determinizm | `override` |
+| 1 | `LinearSVC` do znanej taksonomii, jeśli margines pewności ≥ próg | `model` |
+| 2 | reszta → `AgglomerativeClustering(cosine)` → `NOWY_1`, `NOWY_2`… | `odkryty` |
+| 3 | poprawka eksperta wraca do warstwy 0 i uczy model | — |
+
+Próg warstwy 1 **dobiera się sam** (z predykcji out-of-fold) tak, by trafność przyjętych
+osiągnęła `--cel-trafnosci`. Domyślnie warstwa 1 przyjmuje ~83% części **bez ani jednego
+błędu**, a do eksperta trafia ~17% — w tym 4 na 5 faktycznie nowych typów części.
+
+```bash
+cd agentic
+python run_local.py                            # pełny przebieg + uczciwa ewaluacja OOF
+python run_local.py --porownaj --sim-nowe 0.2  # porównanie torów + symulacja nowych typów
+python run_local.py --encoder minilm           # bi-encoder z HuggingFace zamiast TF-IDF
+python run_local.py --override "0204X00136=RESERVOIR CAP"   # poprawka eksperta
+```
+
+> Pełny opis architektury, wszystkie pomiary i uzasadnienie decyzji projektowych (m.in.
+> dlaczego sieć neuronowa **nie** jest domyślnym enkoderem i dlaczego do modelu idzie
+> **tylko** `MATDESC`): **[`agentic/ARCHITEKTURA_LOKALNA.md`](agentic/ARCHITEKTURA_LOKALNA.md)**.
 
 ## 📊 Ewaluacja i metryki (`evaluate.py`)
 

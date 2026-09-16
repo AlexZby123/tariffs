@@ -1,65 +1,186 @@
-# Architektura Lokalnego Klastrowania Części & Roadmapa
+# Architektura Lokalnego Klastrowania Części
 
-## 1. Kontekst i Cele Projektu
-- **Problem**: Chmurowe klastrowanie LLM (Bosch Model Farm) generuje wysokie koszty tokenów, jest podatne na opóźnienia i brak determinizmu.
-- **Wymaganie kluczowe**:
-  1. Klastrowanie w 100% lokalne, szybkie i niewymagające zasobożernych lokalnych LLM (typu Qwen/Llama), aby komputer pracował cicho i stabilnie.
-  2. Podejście dwuetapowe (**Cluster-then-Label**): najpierw podział na anonimowe grupy o wysokiej spójności, a dopiero potem nazwanie grup (tani prompt zbiorczy lub heurystyka).
-  3. Mechanizm **Human-in-the-Loop**: możliwość trwałego przypisania części do wybranego klastra ("ta część ma być ZAWSZE w tym klastrze") oraz douczanie się systemu na tych poprawkach.
+> Stan: **zaimplementowane i zmierzone**. Wszystkie liczby w tym dokumencie pochodzą
+> z `to_cluster.csv` (3581 wierszy → 1025 PN, 962 PN z etykietą Rudolfa, 77 klas)
+> i są liczone **out-of-fold** — nigdy na danych, na których model się uczył.
+> Odtworzenie: `python run_local.py --porownaj --sim-nowe 0.2`
 
----
+## 1. Kontekst i cele
 
-## 2. Istniejąca Ewaluacja (Ground Truth i Metryki)
-- **Źródło prawdy**: `data_to_cluster/to_cluster_rudolf.xlsx` (kolumna `Cluster NAME`) lub `cla.csv`. Wiersze z etykietą `tbd` są ignorowane.
-- **Zasada**: Nazwy klastrów są ignorowane (`A-Z` wg wielkości) – oceniana jest wyłącznie jakość grupowania rekordów.
-- **Główne metryki**:
-  - **Zgodność Hungarian (`linear_sum_assignment`)**: optymalne dopasowanie 1:1 grup modelu do grup Rudolfa i odsetek poprawnie sklasyfikowanych rekordów.
-  - **Pair F1 / Pair Precision / Pair Recall**: ocena na parach rekordów (czy pary, które powinny być razem, są razem).
-  - **ARI (Adjusted Rand Index)**: skorygowany o przypadek wskaźnik zgodności podziału (baseline TF-IDF = ~0.60, chmurowy LLM = ~0.885).
+- **Problem**: chmurowe klastrowanie LLM (Bosch Model Farm) kosztuje, jest wolne i niedeterministyczne.
+- **Wymagania**:
+  1. 100% lokalnie, szybko, bez ciężkich lokalnych LLM (komputer ma pracować cicho).
+  2. Mechanizm **human-in-the-loop** — trwałe przypisanie części do klastra i douczanie na poprawkach.
+  3. Wykrywanie **nowych typów** części, nie tylko przypisywanie do istniejących.
 
----
+## 2. Co zmierzyliśmy, zanim napisaliśmy kod
 
-## 3. Planowana Architektura Techniczna
+Pierwotny plan zakładał czyste **cluster-then-label** (embedding → klastrowanie → nazwanie grup).
+Pomiary pokazały, że ta ścieżka ma niski sufit, a prawdziwe wyniki leżą gdzie indziej:
+
+| podejście | ARI | pair_f1 |
+|---|---|---|
+| czyste klastrowanie: TF-IDF + agglomerative(cosine, average) | **0.598** | 0.612 |
+| chmurowy LLM (Gemini 3.5 Flash, wg README) | 0.885 | – |
+| **klasyfikator do znanej taksonomii (LinearSVC, OOF)** | **0.954** | **0.956** |
+
+Czyli: mając ~950 zaetykietowanych PN, zwykły klasyfikator liniowy bije chmurowy LLM
+o ~7 pkt ARI, za zero złotych i w kilka sekund. Klastrowanie bez etykiet ma sufit ~0.60.
+
+**Wniosek, który przebudował architekturę**: etykiety Rudolfa to najcenniejszy zasób w tym
+projekcie. Architektura ma z nich korzystać wszędzie tam, gdzie taksonomia jest znana,
+a klastrowanie rezerwować dla tego, do czego jest naprawdę potrzebne — **odkrywania typów,
+których w taksonomii jeszcze nie ma**.
+
+### 2a. Ablacja cech — mniej znaczy więcej
+
+| tekst wejściowy | ARI (OOF) |
+|---|---|
+| sam `MATDESC` | **0.948** |
+| + opis HS Code | 0.934 |
+| + hierarchia produktowa (subclass, statgroup, pclass, BU) | 0.917 |
+
+Dosypywanie kontekstu **rozcieńcza** główny sygnał. Dla klastrowania bez etykiet efekt jest
+dramatyczny: 0.599 → 0.304. Dlatego domyślnie do enkodera idzie **tylko `MATDESC`**.
+(Kody HS i pole materiałowe opisują *surowiec*, a klaster to *typ funkcjonalny* — to dwie
+różne osie, więc mieszanie ich szkodzi.)
+
+### 2b. Sieć neuronowa — gdzie się opłaca, a gdzie nie
+
+Douczony enkoder metryczny (SupCon, PyTorch, uczony na etykietach eksperta) **nie obronił się**:
+
+| enkoder warstwy 1 | trafność (OOF) | ARI (OOF) | pokrycie |
+|---|---|---|---|
+| `tfidf` | **0.956** | **0.954** | **80.5%** |
+| `tfidf+supcon` | 0.946 | 0.937 | 51.7% |
+
+Przy pierwszym pomiarze `+supcon` wyglądał świetnie (ARI 0.991), ale to był **przeciek**:
+enkoder trenował się na etykietach, które potem przewidywał. Po wymuszeniu re-treningu
+enkodera osobno w każdym foldzie przewaga zniknęła. Backend został w kodzie
+(`--encoder tfidf+supcon`) — przy większym zbiorze (`cla.csv`, ~15 tys. wierszy) może się
+opłacić — ale **domyślny jest `tfidf`**.
+
+Osobna, ważna obserwacja: uczenie metryczne **nie przenosi się na typy niewidziane w treningu**
+(ARI 0.910 → 0.342 na symulacji nowych klas). Dlatego warstwa 2 celowo używa embeddingu
+**bazowego**, nie douczonego.
+
+## 3. Zaimplementowana architektura
 
 ```mermaid
 flowchart TD
-    A["Dane wejściowe (MATDESC, RB part name, HS6, Material Field)"] --> B["1. Twardy Słownik / Overrides (Poprawki eksperta)"]
-    B -- "Znaleziono w słowniku" --> Z["100% Deterministic Assignment"]
-    B -- "Brak w słowniku" --> C["2. Lokalny Bi-Encoder (Sentence-Transformers / MiniLM / BGE)"]
-    C --> D["Gęste Wektory Semantyczne (np. 384 dim)"]
-    D --> E["3. Fuzja Cech (+ Kodowane HS6 / Material Field)"]
-    E --> F["4. Klastrowanie Wektorowe (Cosine Agglomerative / Seeded K-Means)"]
-    F --> G["Grupy A, B, C..."]
-    G --> H["5. Douczanie / Drzewa Decyzyjne (LightGBM) przy feedbacku"]
+    A["MATDESC (part card)"] --> B{"WARSTWA 0<br/>overrides.yaml — PN w słowniku eksperta?"}
+    B -- tak --> Z["przypisanie deterministyczne<br/>źródło: override"]
+    B -- nie --> C["enkoder (wymienny): tfidf | minilm | bge | +supcon"]
+    C --> D{"WARSTWA 1<br/>LinearSVC — margines >= próg?"}
+    D -- tak --> E["klaster ze znanej taksonomii<br/>źródło: model"]
+    D -- nie --> F["WARSTWA 2 — agglomerative(cosine)<br/>na embeddingu BAZOWYM, próg odległości"]
+    F --> G["NOWY_1, NOWY_2, ... / DO_PRZEGLADU<br/>źródło: odkryty"]
+    E --> H["WARSTWA 3 — ekspert poprawia"]
+    G --> H
+    H -- "run_local.py --override PN=KLASTER" --> B
 ```
 
-1. **Warstwa 1 (Twardy słownik reguł)**:
-   - Każdy PN zatwierdzony przez człowieka ma sztywne przypisanie – zero kosztów, 100% determinizmu.
-2. **Warstwa 2 (Lekki Bi-Encoder neuronowy)**:
-   - Model `all-MiniLM-L6-v2` lub `bge-small-en-v1.5` (< 100 MB).
-   - Generuje wektory z opisów w kilka sekund na zwykłym CPU (brak wycia wentylatorów).
-3. **Warstwa 3 (Klastrowanie wektorowe)**:
-   - `AgglomerativeClustering(metric='cosine', linkage='average')` lub `Seeded K-Means` dla ~50–70 klastrów funkcjonalnych.
-4. **Warstwa 4 (Drzewa decyzyjne / LightGBM)**:
-   - Klasyfikator na wektorach do błyskawicznego douczania w tle, gdy użytkownik koryguje przypisania.
+Każda część dostaje w wyniku kolumnę `zrodlo` (`override` / `model` / `odkryty`) i `pewnosc`,
+więc widać, skąd wzięła się każda decyzja.
 
----
+### Warstwa 1 — klasyfikator, który wie, czego nie wie
 
-## 4. Rejestr Pomysłów na Kolejne Etapy (Roadmapa)
+Pewność to **margines** = odstęp między najlepszą a drugą klasą w `decision_function`.
+Próg nie jest zgadywany, tylko **dobierany automatycznie** z predykcji out-of-fold tak, by
+trafność przyjętych osiągnęła zadany cel (`--cel-trafnosci`). Zmierzony kompromis:
 
-- **[Etap 2] Nazywanie Klastrów (Cluster Naming via Cloud LLM)**:
-  - Z każdego powstałego klastra bierzemy 3–5 próbek najbliższych centroidu.
-  - Wykonujemy **1 pojedyncze zapytanie do LLM** dla wszystkich 50 klastrów naraz, aby nadać techniczne nazwy (`BALL`, `SENSOR`, `SEAL`).
-  - Redukcja kosztów API o ponad 99%.
-- **[Etap 3] Integracja w UI (`workflow-ui`)**:
-  - Podgląd klastrów, miara pewności (`distance to centroid`).
-  - Funkcja "Przypnij część na stałe do klastra" i przycisk "Zapisz i doucz model".
-- **[Etap 4] Ratunkowy Agent Ekstrakcji Wymiarów (`search_agent`)**:
-  - Połączenie z istniejącym w repozytorium modułem `search_agent/` (Docupedia / Web / Datasheet).
-  - W przypadku części o niskiej pewności klastrowania (np. enigmatyczny opis) agent wyciąga wymiary fizyczne i wagę, aby precyzyjnie doklastrować detal.
+| cel | pokrycie | trafność przyjętych | nowe typy wykryte | fałszywy alarm |
+|---|---|---|---|---|
+| 0.970 | 96.9% | 0.971 | 18.0% | 2.9% |
+| 0.980 | 94.8% | 0.981 | 39.3% | 3.2% |
+| 0.990 | 91.3% | 0.990 | 52.9% | 3.8% |
+| 0.995 | 88.1% | 0.996 | 62.7% | 4.0% |
+| **0.999 (domyślne)** | **83.1%** | **1.000** | **79.1%** | 6.3% |
 
----
+Przy domyślnym progu warstwa 1 **nie myli się na tym, co przyjmuje**, a do eksperta trafia
+~17% części — w tym 4 na 5 faktycznie nowych typów. Wartości stabilne (±2 pp przez 5 seedów).
 
-## 5. Rekomendacja Modeli do Programowania
-- **Eksploracja i dyskusja**: Gemini 3.8 Flash (High) – szybki i responsywny.
-- **Implementacja ML i precyzyjne algorytmy**: Gemini Pro lub Claude 3.5 Sonnet / Opus – maksymalna dokładność w logice bibliotek scikit-learn/scipy/torch.
+> Testowaliśmy też drugą bramkę — odległość do najbliższego centroidu klasy (klasyczny
+> open-set). Dawała +1 pp wykrywalności nowości za 3× więcej fałszywych alarmów, więc
+> jej **nie ma** w kodzie.
+
+### Warstwa 2 — odkrywanie nowych typów
+
+`AgglomerativeClustering(distance_threshold, metric="cosine", linkage="average")` — bez
+zgadywania liczby klastrów z góry. Próg (`--prog-odkrywania`, domyślnie 0.60) świadomie
+ustawiony na **rozdrobnienie zamiast sklejania**:
+
+| próg | wykrytych grup (prawda: 16) | pair_precision |
+|---|---|---|
+| 0.30 | 82 | 0.991 |
+| 0.60 | 55 | 0.985 |
+| 0.80 | 32 | 0.963 |
+
+Eksperta łatwiej poprosić o scalenie dwóch czystych grupek niż o rozplątanie jednej błędnie
+sklejonej. Grupy poniżej `min_licznosc_nowego` dostają etykietę `DO_PRZEGLADU`.
+
+### Wynik end-to-end (symulacja: 16 klas / 244 PN ukryte przed modelem)
+
+| miara | wynik |
+|---|---|
+| nowe typy skierowane do warstwy 2 | 79.1% |
+| fałszywy alarm na znanych typach | 6.3% |
+| trafność warstwy 1 na tym, co przyjęła | 0.996 |
+| jakość grupowania nowych typów (pair_precision) | 0.837 |
+
+## 4. Użycie
+
+```bash
+cd agentic
+
+python run_local.py                          # pełny przebieg + uczciwa ewaluacja
+python run_local.py --porownaj --sim-nowe 0.2   # z porównaniem torów i symulacją nowych typów
+python run_local.py --encoder tfidf+supcon   # enkoder neuronowy (PyTorch, offline)
+python run_local.py --encoder minilm         # bi-encoder z HuggingFace
+python run_local.py --cel-trafnosci 0.98     # więcej automatyzacji, mniej odkrywania
+python run_local.py --predict-only           # użyj zapisanego modelu
+
+# WARSTWA 3 — poprawka eksperta (trafia do overrides.yaml i uczy model)
+python run_local.py --override "0204X00136=RESERVOIR CAP"
+```
+
+Wyniki lądują w `wyniki/<data>_local_<enkoder>/`: `klastry_per_PN.csv`,
+`klastry_per_wiersz.csv`, `legenda_klastrow.csv`, `podsumowanie.txt`, `ewaluacja.txt`.
+
+> `ewaluacja.txt` liczy metryki na wierszach dla modelu dotrenowanego na **wszystkich**
+> etykietach — te liczby są **zawyżone** i służą tylko do porównania z historycznymi
+> przebiegami chmurowymi. Miarodajna jest sekcja A w `podsumowanie.txt` (out-of-fold).
+
+## 5. Zależności
+
+Rdzeń (`tfidf`) wymaga tylko `pandas`, `scikit-learn`, `scipy`, `PyYAML`, `openpyxl` —
+wszystko już jest w `requirements.txt`. Opcjonalnie:
+
+```bash
+pip install torch                    # backend +supcon
+pip install sentence-transformers    # backendy minilm / bge (pobiera model z HuggingFace)
+```
+
+## 6. Co dalej (roadmapa)
+
+- **[Etap 2] Nazywanie grup z warstwy 2**: 3–5 próbek najbliższych centroidowi z każdej grupy
+  `NOWY_n`, **jedno** zapytanie do LLM na wszystkie grupy naraz. Redukcja kosztów API >99%.
+  Dotyczy tylko ~17% części, więc to naprawdę tanie.
+- **[Etap 3] Integracja w `workflow-ui`**: podgląd klastrów z kolumną `zrodlo` i `pewnosc`,
+  kolejka `DO_PRZEGLADU`, przycisk „przypnij na stałe" → `zapisz_override()` → re-trening.
+- **[Etap 4] `search_agent` jako ratunek**: dla części z `DO_PRZEGLADU` o enigmatycznym opisie
+  wyciągnąć wymiary i wagę z kart katalogowych i doklastrować detal.
+- **Walidacja na `cla.csv`**: większy zbiór (~15 tys. wierszy) — tam `+supcon` może się obronić.
+  Uwaga: `dataset_train.csv` / `dataset_test.csv` **nie nadają się** do uczciwej ewaluacji —
+  1166 z 1363 PN testowych występuje też w treningu (przeciek), a pliki nie zawierają `MATDESC`.
+
+## 7. Mapa plików
+
+| plik | rola |
+|---|---|
+| `encoders.py` | wymienne enkodery: `tfidf`, `st:<model>`, `+supcon` (PyTorch) |
+| `local_clustering.py` | warstwy 0–3, dobór progu, zapis/odczyt modelu |
+| `run_local.py` | CLI, uczciwa ewaluacja OOF, symulacja nowych typów, zapis wyników |
+| `overrides.yaml` | słownik eksperta PN → klaster (warstwa 0 / 3) |
+| `data_prep.py` | wczytanie danych, deduplikacja do PN, part card |
+| `evaluate.py` | metryki (ARI, pair_f1, NMI, Hungarian) — wspólne z torem chmurowym |
