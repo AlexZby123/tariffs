@@ -10,7 +10,7 @@ Standardy docelowe:
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 from models import RawDimensions, MetricDimensions
 
 # Współczynniki przeliczeniowe na milimetry [mm]
@@ -87,6 +87,29 @@ _WEIGHT_UNITS = {
 }
 
 
+def _find_unit(raw_clean: str, units: Dict[str, float]) -> Optional[str]:
+    """
+    Znajduje najdłuższą pasującą jednostkę w tekście.
+
+    W przeciwieństwie do zwykłego \\b<jednostka>\\b, dopuszcza sytuację, w
+    której jednostka sąsiaduje BEZPOŚREDNIO z cyfrą (np. '10cm', '2kg') -
+    w praktyce karty katalogowe i tekst ze stron internetowych bardzo
+    często nie mają spacji między liczbą a jednostką, a zwykłe \\b nie
+    'widzi' granicy między cyfrą a literą (obie są znakami \\w). Nadal NIE
+    pozwala dopasować jednostki w środku innego słowa (np. 'm' wewnątrz
+    'minutes'), bo to wymagałoby braku litery po obu stronach dopasowania.
+    """
+    for u in sorted(units.keys(), key=len, reverse=True):
+        if u in ('"', "'"):
+            if u in raw_clean:
+                return u
+            continue
+        pattern = r"(?<![a-zA-Z])" + re.escape(u) + r"(?![a-zA-Z])"
+        if re.search(pattern, raw_clean):
+            return u
+    return None
+
+
 def _parse_fraction(text: str) -> Optional[float]:
     """Konwertuje ułamki zwykłe np. '1/2', '3/8', '1 1/4' na liczbę zmiennoprzecinkową."""
     # Usuwamy litery i cudzysłowy, aby wyodrębnić sam zapis liczbowy
@@ -109,11 +132,43 @@ def _parse_fraction(text: str) -> Optional[float]:
     return None
 
 
+def _normalize_decimal_separator(cleaned: str) -> str:
+    """
+    Rozstrzyga, czy przecinek w liczbie to europejski separator dziesiętny
+    ('12,5' -> 12.5) czy amerykański separator tysięcy ('1,200' -> 1200).
+
+    Zasady:
+    - jeśli w tekście występuje ZARÓWNO przecinek, jak i kropka (np. '1,234.5'),
+      przecinek musi być separatorem tysięcy (nie może być dwóch separatorów
+      dziesiętnych) -> usuwamy przecinki;
+    - jeśli jest dokładnie jeden przecinek, po którym następują DOKŁADNIE
+      3 cyfry (np. '1,200'), traktujemy go jako separator tysięcy;
+    - w pozostałych przypadkach (np. '12,5', '3,75') traktujemy go jako
+      przecinek dziesiętny.
+
+    To rozróżnienie jest z natury niejednoznaczne bez znajomości lokalizacji
+    źródła - to najlepsza dostępna heurystyka, nie gwarancja poprawności.
+    """
+    if "," in cleaned and "." in cleaned:
+        return cleaned.replace(",", "")
+    if cleaned.count(",") == 1:
+        before, after = cleaned.split(",", 1)
+        before_digits = re.sub(r"[^\d]", "", before)
+        # Sprawdzamy, czy DOKŁADNIE 3 cyfry następują bezpośrednio po przecinku
+        # (nie że cały pozostały tekst ma długość 3 - "after" może jeszcze
+        # zawierać jednostkę, np. "1,200 mm" -> after == "200 mm", nie "200").
+        after_match = re.match(r"^\d{3}(?!\d)", after)
+        if after_match and before_digits:
+            return cleaned.replace(",", "", 1)
+        return cleaned.replace(",", ".")
+    return cleaned.replace(",", ".")
+
+
 def parse_numeric_value(val_str: str) -> Optional[float]:
     """Wyciąga pojedynczą wartość liczbową (w tym ułamki i przecinki dziesiętne)."""
     if not val_str:
         return None
-    cleaned = val_str.strip().replace(",", ".")
+    cleaned = _normalize_decimal_separator(val_str.strip())
 
     # Sprawdź czy to ułamek (np. 1/2 in, 3/8", 1 1/4)
     frac = _parse_fraction(cleaned)
@@ -140,14 +195,7 @@ def normalize_length_to_mm(raw_str: Optional[str]) -> Optional[float]:
         return None
 
     raw_clean = raw_str.strip().lower()
-
-    # Dopasuj jednostkę
-    unit = None
-    # Sortujemy klucze malejąco po długości, aby 'millimeters' dopasowało się przed 'mm'
-    for u in sorted(_LENGTH_UNITS.keys(), key=len, reverse=True):
-        if re.search(r"\b" + re.escape(u) + r"\b", raw_clean) or (u in ('"', "'") and u in raw_clean):
-            unit = u
-            break
+    unit = _find_unit(raw_clean, _LENGTH_UNITS)
 
     # Jeśli nie wykryto jednostki, ale jest liczba, zakładamy domyślnie mm (branża automotive)
     factor = _LENGTH_UNITS.get(unit, 1.0)
@@ -167,21 +215,18 @@ def normalize_weight_to_g(raw_str: Optional[str]) -> Optional[float]:
 
     raw_clean = raw_str.strip().lower()
 
-    # Obsługa złożonych formatów np. "2 lbs 4 oz"
-    compound_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:lbs?|pounds?)\s*(\d+(?:\.\d+)?)\s*(?:oz|ounces?)", raw_clean)
+    # Obsługa złożonych formatów np. "2 lbs 4 oz" (z lub bez spacji przed jednostką)
+    compound_match = re.search(
+        r"(\d+(?:\.\d+)?)\s*(?:lbs?|pounds?)\s*(\d+(?:\.\d+)?)\s*(?:oz|ounces?)",
+        raw_clean,
+    )
     if compound_match:
         lbs = float(compound_match.group(1))
         oz = float(compound_match.group(2))
         total_g = lbs * _WEIGHT_UNITS["lb"] + oz * _WEIGHT_UNITS["oz"]
         return round(total_g, 2)
 
-    # Standardowe wykrywanie jednostki
-    unit = None
-    for u in sorted(_WEIGHT_UNITS.keys(), key=len, reverse=True):
-        if re.search(r"\b" + re.escape(u) + r"\b", raw_clean):
-            unit = u
-            break
-
+    unit = _find_unit(raw_clean, _WEIGHT_UNITS)
     factor = _WEIGHT_UNITS.get(unit, 1.0)  # Domyślnie gramy
     num_val = parse_numeric_value(raw_clean)
 

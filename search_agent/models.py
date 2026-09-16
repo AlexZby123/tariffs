@@ -35,6 +35,16 @@ class RawDimensions(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Ocena pewności odczytu przez model (0-1)")
     source_snippet: Optional[str] = Field(default=None, description="Cytat ze specyfikacji potwierdzający wymiary")
     source_url: Optional[str] = Field(default=None, description="URL lub nazwa źródła/karty katalogowej")
+    extraction_method: Optional[str] = Field(
+        default=None,
+        description=(
+            "Skąd faktycznie pochodzą wartości: 'extracted' (odczytane z realnego tekstu/obrazu "
+            "źródła), 'estimated' (zgadnięte przez LLM na podstawie wiedzy ogólnej, brak realnego "
+            "źródła), 'regex_fallback' (prosty parser regexowy, bez udziału LLM), lub None jeśli "
+            "nieznane. Pozwala odróżnić zweryfikowane dane od domysłów zamiast polegać wyłącznie "
+            "na polu confidence."
+        ),
+    )
 
 
 class MetricDimensions(BaseModel):
@@ -57,5 +67,9 @@ class DimensionExtractionResult(BaseModel):
     metric: Optional[MetricDimensions] = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     source_url: Optional[str] = None
+    source_type: Optional[str] = Field(
+        default=None,
+        description="Który dostawca faktycznie dostarczył dane: docupedia / catalog / web / hybrid / mock.",
+    )
     notes: Optional[str] = None
     processing_time_s: Optional[float] = None

@@ -4,13 +4,16 @@ Agent LLM do precyzyjnej ekstrakcji wymiarów i wagi z kart katalogowych i specy
 """
 from __future__ import annotations
 
-import json
+import base64
+import logging
 import re
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from models import ProductQuery, RawDimensions
+
+logger = logging.getLogger(__name__)
 
 # Umożliwienie importu LLMClient z katalogu agentic/
 _AGENTIC_DIR = Path(__file__).parent.parent / "agentic"
@@ -25,31 +28,35 @@ except ImportError:
 
 
 SYSTEM_PROMPT = """You are an expert Technical Specification Extraction Agent for Bosch automotive and industrial components.
-Your task is to extract physical dimensions (Length, Width, Height, Diameter) and Weight/Mass from the provided technical datasheet or search text.
+Your task is to identify and provide the physical dimensions (Length, Width, Height, Diameter) and Weight/Mass of the target part.
 
-CRITICAL INSTRUCTIONS:
-1. Extract the EXACT raw value and unit as stated in the text (e.g. '120 mm', '4.5 in', '15.2 cm', '350 g', '2 lbs 4 oz', '0.078 kg').
-2. If overall dimensions are given as a compound string like '182 x 35 x 30 mm', break it down:
-   raw_length: '182 mm', raw_width: '35 mm', raw_height: '30 mm'.
-3. If the part is cylindrical (e.g. pin, rod, needle, bolt, shaft, o-ring cord, circular sensor body) and only diameter and length are given, set raw_diameter and raw_length.
-4. Provide a direct short quote (source_snippet) confirming where the numbers came from.
-5. Provide confidence:
-   - 0.9 to 1.0: Exact datasheet match for this specific part number.
-   - 0.6 to 0.8: Belongs to the same part family or clear spec.
-   - < 0.5: Uncertain or deduced.
-   - 0.0: No dimensions or weight found in the text.
-6. If any attribute is not mentioned in the text, return null for that field.
+RULES:
+1. You may receive textual datasheets AND/OR images of schematics, technical drawings, or catalogs. Extract the EXACT raw values and units (e.g. '120 mm', '4.5 in', '15.2 cm', '350 g', '0.18 kg').
+2. Pay close attention to engineering drawings: look for dimension lines, labels, arrows, and tables.
+3. SOURCE PRIORITY: the provided text may be labeled by its origin (e.g. "BOSCH DOCUPEDIA INTERNAL DOCUMENTATION", "AFTERMARKET CATALOG SPECS", "TECHNICAL SEARCH RESULTS" / web snippets, or a page explicitly flagged as not clearly mentioning the target part number). When sources disagree, trust internal Bosch/Docupedia documentation and official OEM/manufacturer sources over generic aftermarket catalogs or web search snippets, and treat flagged/unverified pages with extra caution. If sources meaningfully disagree, prefer the more authoritative one and LOWER your confidence score rather than averaging the values or picking one silently.
+4. If the provided data (text or images) is completely generic and does NOT contain dimensions/weight, you MAY use your automotive technical domain knowledge regarding this exact part number (and its product title) to provide a plausible estimate - but you MUST mark it as such (see rule 7). Never present a guess as a verified reading.
+5. For cylindrical or ring-shaped parts (e.g. steering torque sensor, o-ring, shaft), provide raw_diameter (outer diameter) and raw_height (thickness) or raw_length.
+6. In 'source_snippet', state either the direct quote from the text, OR a description of where you found it in the drawing (e.g. 'Found in table on schematic page 2'), OR if using domain knowledge: 'Estimated from domain knowledge'.
+7. Set "extraction_method" to exactly one of:
+   - "extracted": the values came from real text or image content you were given.
+   - "estimated": you had no real data and used general domain knowledge (rule 4). NEVER label a guess as "extracted" - this field is what lets downstream systems (e.g. customs/tariff classification) tell verified data from guesses apart.
+8. Set confidence:
+   - 0.90 to 1.0: exact, verified specification from a datasheet/schematic/internal documentation.
+   - 0.70 to 0.89: reliable specification based on part family/standard form factor, or from a source that isn't fully authoritative.
+   - < 0.60: approximate/deduced from domain knowledge, or from a low-trust/conflicting source.
+   - 0.0: unknown part and no data found.
 
-Return ONLY a JSON object matching this schema:
+Return ONLY a JSON object:
 {
-  "found": true/false,
+  "found": true,
   "raw_length": "string with unit or null",
   "raw_width": "string with unit or null",
   "raw_height": "string with unit or null",
   "raw_diameter": "string with unit or null",
   "raw_weight": "string with unit or null",
   "confidence": 0.0-1.0,
-  "source_snippet": "short quote from text"
+  "extraction_method": "extracted" or "estimated",
+  "source_snippet": "quote or technical reference note"
 }
 """
 
@@ -136,13 +143,30 @@ class DimensionExtractorAgent:
                 try:
                     cfg = wczytaj_config(cfg_path)
                     self.client = LLMClient(cfg)
-                except Exception:
+                except Exception as e:
+                    logger.warning("Failed to initialize LLMClient from %s (%s) - falling back to the regex extractor.", cfg_path, e)
                     self.use_mock = True
             else:
+                logger.warning("agentic/config.yaml not found at %s - falling back to the regex extractor.", cfg_path)
                 self.use_mock = True
 
-    def extract(self, query: ProductQuery, source_text: str, source_url: str = "") -> RawDimensions:
-        """Główna metoda ekstrakcji."""
+        if not self.use_mock and self.client is None:
+            # LLMClient module itself could not be imported (llm_client not on sys.path /
+            # agentic/ directory not where expected). This used to fail SILENTLY - a
+            # non-mock ("--live") run would quietly extract with the crude regex parser
+            # instead of the LLM, with no indication anything was wrong.
+            logger.warning(
+                "Non-mock extraction was requested but no LLM client is available "
+                "(llm_client module could not be imported). Every extract() call will "
+                "silently use the basic regex fallback instead of the LLM. Check that "
+                "agentic/llm_client.py and agentic/config.yaml are reachable relative to "
+                "this module's location, or pass an explicit llm_client= instance."
+            )
+
+    def extract(self, query: ProductQuery, source_text: str, source_url: str = "", attachments: Optional[List[str]] = None) -> RawDimensions:
+        """Główna metoda ekstrakcji (wspiera analizę wizyjną z załączników PDF/obrazów)."""
+        attachments = attachments or []
+
         if self.use_mock or self.client is None:
             raw_dict = _mock_extract_dimensions(source_text)
             return RawDimensions(
@@ -154,32 +178,167 @@ class DimensionExtractorAgent:
                 confidence=raw_dict.get("confidence", 0.0),
                 source_snippet=raw_dict.get("source_snippet") or source_text[:200],
                 source_url=source_url,
+                extraction_method="regex_fallback",
             )
 
-        # Uruchomienie modelu LLM
-        user_prompt = (
+        # 1. PRZYGOTOWANIE TEKSTU I INTELIGENTNE WYSZUKIWANIE W PDF
+        pdf_docs = []
+        pdf_filtered_text = ""
+        
+        if attachments:
+            try:
+                import pymupdf
+            except ImportError:
+                pymupdf = None
+
+            for att_path in attachments:
+                path = Path(att_path)
+                if not path.exists():
+                    continue
+
+                if pymupdf and path.suffix.lower() == ".pdf":
+                    try:
+                        doc = pymupdf.open(str(path))
+                        pdf_docs.append((path, doc))
+                        
+                        keywords = ["mm", "cm", "kg", " g", "lbs", "weight", "mass", "length", "width", "height", "dimension", "size", "wymiar", "waga", "masa", "diameter", "grubo", "srednica"]
+                        pn = query.part_number.lower() if query.part_number else ""
+                        
+                        extracted = []
+                        for page in doc:
+                            text = page.get_text()
+                            for line in text.splitlines():
+                                lower = line.lower()
+                                if any(k in lower for k in keywords) or (pn and pn in lower):
+                                    if len(line.strip()) > 3:
+                                        extracted.append(line.strip())
+                        
+                        if extracted:
+                            pdf_filtered_text += f"\n\n--- EXTRACTED TEXT FROM PDF: {path.name} ---\n"
+                            seen = set()
+                            for line in extracted:
+                                if line not in seen:
+                                    pdf_filtered_text += line + "\n"
+                                    seen.add(line)
+                    except Exception as e:
+                        print(f"Error reading PDF text {path.name}: {e}")
+
+        full_source_text = source_text
+        if pdf_filtered_text:
+            full_source_text += pdf_filtered_text
+
+        user_text_prompt = (
             f"TARGET PART IDENTIFIERS:\n"
             f"- Brand: {query.brand}\n"
             f"- Part Number: {query.part_number}\n"
             f"- Title / Description: {query.title or 'N/A'}\n"
             f"- Category: {query.category or 'N/A'}\n\n"
             f"DATASHEET / SPECIFICATION TEXT:\n"
-            f"\"\"\"\n{source_text}\n\"\"\"\n"
+            f"\"\"\"\n{full_source_text}\n\"\"\"\n"
         )
 
         try:
-            resp_obj = self.client.chat_json(SYSTEM_PROMPT, user_prompt)
+            # ETAP 1: Wywołanie tekstowe (Tanie, szybkie)
+            resp_obj = self.client.chat_json(SYSTEM_PROMPT, user_text_prompt)
+            extraction_method = resp_obj.get("extraction_method")
+            if extraction_method not in ("extracted", "estimated"):
+                extraction_method = "estimated" if float(resp_obj.get("confidence", 0.0)) < 0.6 else "extracted"
+            conf = float(resp_obj.get("confidence", 0.0))
+
+            # Jeśli sukces (znaleziono w tekście), ZWRÓĆ WYNIK
+            if extraction_method == "extracted" and conf >= 0.7:
+                return RawDimensions(
+                    raw_length=resp_obj.get("raw_length"),
+                    raw_width=resp_obj.get("raw_width"),
+                    raw_height=resp_obj.get("raw_height"),
+                    raw_diameter=resp_obj.get("raw_diameter"),
+                    raw_weight=resp_obj.get("raw_weight"),
+                    confidence=conf,
+                    source_snippet=resp_obj.get("source_snippet"),
+                    source_url=source_url,
+                    extraction_method=extraction_method,
+                )
+            
+            # Jeśli brak sukcesu, ale nie ma załączników, zwróć co mamy
+            if not attachments:
+                return RawDimensions(
+                    raw_length=resp_obj.get("raw_length"),
+                    raw_width=resp_obj.get("raw_width"),
+                    raw_height=resp_obj.get("raw_height"),
+                    raw_diameter=resp_obj.get("raw_diameter"),
+                    raw_weight=resp_obj.get("raw_weight"),
+                    confidence=conf,
+                    source_snippet=resp_obj.get("source_snippet"),
+                    source_url=source_url,
+                    extraction_method=extraction_method,
+                )
+
+            # ETAP 2: Fallback na VISION (droższe wywołanie obrazkowe, jeśli tekst zawiódł)
+            content_blocks = [{"type": "text", "text": user_text_prompt}]
+            has_images = False
+
+            for path, doc in pdf_docs:
+                for i, page in enumerate(doc):
+                    if i >= 10:
+                        break
+                    try:
+                        pix = page.get_pixmap(dpi=100)
+                        img_data = pix.tobytes("jpeg")
+                        b64_img = base64.b64encode(img_data).decode('utf-8')
+                        content_blocks.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}
+                        })
+                        has_images = True
+                    except Exception as e:
+                        print(f"Error rendering PDF {path.name}: {e}")
+
+            for att_path in attachments:
+                path = Path(att_path)
+                if path.suffix.lower() in [".png", ".jpg", ".jpeg"]:
+                    try:
+                        b64_img = base64.b64encode(path.read_bytes()).decode('utf-8')
+                        content_blocks.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}
+                        })
+                        has_images = True
+                    except Exception as e:
+                        print(f"Error reading image {path.name}: {e}")
+
+            if not has_images:
+                # Zwróć wynik tekstowy jeśli ostatecznie brak obrazków
+                return RawDimensions(
+                    raw_length=resp_obj.get("raw_length"),
+                    raw_width=resp_obj.get("raw_width"),
+                    raw_height=resp_obj.get("raw_height"),
+                    raw_diameter=resp_obj.get("raw_diameter"),
+                    raw_weight=resp_obj.get("raw_weight"),
+                    confidence=conf,
+                    source_snippet=resp_obj.get("source_snippet"),
+                    source_url=source_url,
+                    extraction_method=extraction_method,
+                )
+
+            # Ostatnie wywołanie LLM z obrazkami
+            resp_obj_vision = self.client.chat_json(SYSTEM_PROMPT, content_blocks)
+            extraction_method_v = resp_obj_vision.get("extraction_method")
+            if extraction_method_v not in ("extracted", "estimated"):
+                extraction_method_v = "estimated" if float(resp_obj_vision.get("confidence", 0.0)) < 0.6 else "extracted"
+
             return RawDimensions(
-                raw_length=resp_obj.get("raw_length"),
-                raw_width=resp_obj.get("raw_width"),
-                raw_height=resp_obj.get("raw_height"),
-                raw_diameter=resp_obj.get("raw_diameter"),
-                raw_weight=resp_obj.get("raw_weight"),
-                confidence=float(resp_obj.get("confidence", 0.0)),
-                source_snippet=resp_obj.get("source_snippet"),
+                raw_length=resp_obj_vision.get("raw_length"),
+                raw_width=resp_obj_vision.get("raw_width"),
+                raw_height=resp_obj_vision.get("raw_height"),
+                raw_diameter=resp_obj_vision.get("raw_diameter"),
+                raw_weight=resp_obj_vision.get("raw_weight"),
+                confidence=float(resp_obj_vision.get("confidence", 0.0)),
+                source_snippet=resp_obj_vision.get("source_snippet"),
                 source_url=source_url,
+                extraction_method=extraction_method_v,
             )
         except Exception as e:
+            logger.warning("LLM extraction call failed (%s: %s) - falling back to the regex extractor for this query.", type(e).__name__, str(e)[:200])
             # Fallback na mock extractor w razie awarii API
             fallback = _mock_extract_dimensions(source_text)
             return RawDimensions(
@@ -191,4 +350,5 @@ class DimensionExtractorAgent:
                 confidence=fallback.get("confidence", 0.0),
                 source_snippet=f"(Fallback parser - error: {str(e)[:60]})",
                 source_url=source_url,
+                extraction_method="regex_fallback",
             )

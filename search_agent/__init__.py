@@ -21,6 +21,11 @@ from .search_provider import (
     WebDatasheetProvider,
     MockDatasheetProvider,
     CachedSearchProvider,
+    HybridDatasheetProvider,
+)
+from .docupedia_provider import (
+    DocupediaClient,
+    DocupediaDatasheetProvider,
 )
 from .extractor_agent import DimensionExtractorAgent
 from .pipeline import DimensionWorkflow
@@ -38,6 +43,9 @@ __all__ = [
     "WebDatasheetProvider",
     "MockDatasheetProvider",
     "CachedSearchProvider",
+    "HybridDatasheetProvider",
+    "DocupediaClient",
+    "DocupediaDatasheetProvider",
     "DimensionExtractorAgent",
     "DimensionWorkflow",
 ]

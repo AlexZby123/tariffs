@@ -165,19 +165,18 @@ class LLMClient:
         odp = self.chat_text("You are a healthcheck.", "Reply with the single word: OK")
         return f"{self.provider} / {self.model} -> {odp.strip()[:40]}"
 
-    # --- glowne wywolania ---
-    def chat_text(self, system: str, user: str) -> str:
+    def chat_text(self, system: str, user: Any) -> str:
         if self.provider == "mock":
-            return _mock_odpowiedz(system, user)
+            return _mock_odpowiedz(system, user if isinstance(user, str) else str(user))
         return self._chat_with_retry(system, user, json_mode=False)
 
-    def chat_json(self, system: str, user: str) -> Any:
+    def chat_json(self, system: str, user: Any) -> Any:
         if self.provider == "mock":
-            return wyciagnij_json(_mock_odpowiedz(system, user, json_mode=True))
+            return wyciagnij_json(_mock_odpowiedz(system, user if isinstance(user, str) else str(user), json_mode=True))
         txt = self._chat_with_retry(system, user, json_mode=True)
         return wyciagnij_json(txt)
 
-    def _chat_with_retry(self, system: str, user: str, json_mode: bool) -> str:
+    def _chat_with_retry(self, system: str, user: Any, json_mode: bool) -> str:
         # flagi adaptowane przy bledach parametrow (rozne modele maja rozne wymogi:
         # GPT-5/o-series: 'max_completion_tokens' zamiast 'max_tokens', temperatura=1)
         use_json = json_mode

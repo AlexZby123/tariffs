@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "docupedia": {
+      "type": "http",
+      "url": "https://ews-emea.api.bosch.com/gcl/prd/orchestrator/docupedia-v2-rw/mcp"
+    }
+  }
+}

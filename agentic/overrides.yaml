@@ -1,0 +1,10 @@
+# Twardy słownik przypisań: PN -> klaster
+# Części wpisane tutaj ZAWSZE trafią do wskazanego klastra (100% determinizm).
+# Używaj do korekt eksperckich (human-in-the-loop).
+#
+# Format:
+#   "NUMER_CZESCI": "NAZWA_KLASTRA"
+#
+# Przykład:
+#   "0204X00136": "RESERVOIR CAP"
+#   "1234567890": "BALL"
