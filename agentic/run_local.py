@@ -453,9 +453,11 @@ def zapisz_json_odkrycie(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFram
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Lokalne klastrowanie hybrydowe (bez LLM)")
-    p.add_argument("--tryb", default="discover", choices=["discover", "classify"],
-                   help="discover = zbuduj podzial OD ZERA, bez etykiet Rudolfa (dom.); "
-                        "classify = ucz sie etykiet Rudolfa i odtwarzaj je na nowych czesciach")
+    p.add_argument("--tryb", default="classify", choices=["classify", "discover"],
+                   help="classify (dom.) = ucz sie na czesciach juz opisanych przez "
+                        "eksperta i przypisuj nowe; niepewne i nieznane typy ida do "
+                        "warstwy odkrywczej. discover = zbuduj podzial OD ZERA, bez "
+                        "zadnych etykiet - tylko na zimny start.")
     p.add_argument("--grupowanie", default="cloud", choices=["cloud", "local"],
                    help="tryb discover: jak pogrupowac frazy typu. cloud = 1 zapytanie "
                         "do LLM (dom.), local = w pelni offline")
@@ -486,6 +488,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--porownaj", action="store_true",
                    help="tabela: klastrowanie vs klasyfikator vs hybryda")
     p.add_argument("--bez-capri", action="store_true", help="nie doczytuj cache CaPRI")
+    p.add_argument("--bez-dodatkowych", action="store_true",
+                   help="tryb classify: NIE doczytuj dodatkowego korpusu Rudolfa "
+                        "(cla_bez_tbd.xlsx). Mniejsze pokrycie taksonomii.")
     p.add_argument("--predict-only", action="store_true",
                    help="uzyj zapisanego modelu zamiast trenowac")
     p.add_argument("--override", action="append", default=[], metavar="PN=KLASTER",
@@ -553,9 +558,23 @@ def main() -> None:
         print(f"  Results -> {out.relative_to(KATALOG)}")
         return
 
+    # WARSTWA 2 pracuje w przestrzeni z cechami fizycznymi - musza byc w ramce
+    pn_df = pn_df.join(dk.cechy_fizyczne(rekordy), on="PN")
+
+    df_tren = pn_df[maska].reset_index(drop=True)
+    y_tren = y[maska]
+    if not args.bez_dodatkowych:
+        extra = dp.wczytaj_dodatkowe_etykiety()
+        # konflikt rozstrzyga to_cluster - to on jest punktem odniesienia oceny
+        extra = extra[~extra["PN"].astype(str).isin(set(df_tren["PN"].astype(str)))]
+        if len(extra):
+            print(f"  [data] +{len(extra)} PN from the extra labelled corpus "
+                  f"({extra['y'].nunique()} classes)")
+            df_tren = pd.concat([df_tren, extra[["PN", "MATDESC"]]], ignore_index=True)
+            y_tren = np.concatenate([y_tren, extra["y"].values])
+
     print(f"\n[1] Training layer 1 (encoder: {cfg.encoder})...")
-    model = lc.HybrydowyKlasyfikator(cfg).fit(
-        pn_df[maska].reset_index(drop=True), y[maska], n_folds=args.folds)
+    model = lc.HybrydowyKlasyfikator(cfg).fit(df_tren, y_tren, n_folds=args.folds)
 
     print("\n[2] Honest evaluation (out-of-fold)...")
     oof = raport_oof(model)

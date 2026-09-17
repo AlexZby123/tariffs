@@ -118,23 +118,15 @@ Funkcja `part_card()` w `data_prep.py` formuje zwarty rekord tekstowy dla modelu
 Drugi, **w pełni lokalny** tor: bez LLM, bez tokenów, bez sieci. Na tym zbiorze
 **bije tor chmurowy** (ARI 0.954 vs 0.885) i liczy się w sekundy na zwykłym CPU.
 
-Tor lokalny ma **dwa tryby**, dla dwóch różnych zadań:
+Tor lokalny to **jeden proces**, bez wyboru trybu. Model uczy się na częściach, które
+ekspert już opisał, i przypisuje nowe. Czego nie jest pewny albo czego nie zna — trafia do
+warstwy odkrywczej, dostaje nazwę od LLM i ląduje w kolejce do przeglądu. Każda poprawka
+wraca do treningu.
 
-| tryb | zadanie | widzi etykiety? | wynik |
-|---|---|---|---|
-| **`discover`** (domyślny) | zbuduj podział **od zera**, jak tor chmurowy | nie | ARI 0.72 offline |
-| `classify` | odtwarzaj **istniejącą** taksonomię na nowych częściach | tak | ARI 0.954 |
+Zmierzone uczciwie (out-of-fold, na wierszach): **95.7% trafności, ARI 0.956, 99 klas**
+w taksonomii. Chmurowy tor agentowy na tej samej mierze ma 0.885 przy ~45 zapytaniach.
 
-Te liczby **nie są porównywalne** — `classify` dostaje gotowe odpowiedzi i ma je powtórzyć.
-Odniesieniem dla `discover` jest tor chmurowy: ARI 0.885 przy ~45 zapytaniach.
-
-W trybie `discover` z opisów wycinana jest sama fraza typu (`SPRING`, `VALVE BODY`),
-dokładane są cechy fizyczne (waga, objętość, wartość na sztukę — w danych wypełnione w 100%),
-a `1025` części zwija się do ~274 unikalnych fraz. Pogrupowanie tych fraz w typy funkcjonalne
-to **jedno** zapytanie do LLM. Korekta eksperta działa wtedy na poziomie frazy — jedno
-przypięcie przenosi wszystkie części o tym samym typie (zmierzone: 25 części naraz).
-
-W trybie `classify` każda część przechodzi przez trzy warstwy i dostaje kolumnę `source`:
+Każda część W trybie `classify` każda część przechodzi przez trzy warstwy i dostaje kolumnę `source`:
 
 | warstwa | mechanizm | źródło |
 |---|---|---|

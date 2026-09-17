@@ -5,21 +5,48 @@
 > i są liczone **out-of-fold** — nigdy na danych, na których model się uczył.
 > Odtworzenie: `python run_local.py --porownaj --sim-nowe 0.2`
 
-## 0. Dwa tryby — który do czego
+## 0. Jeden proces — co się dzieje po kliknięciu „Cluster parts"
 
-Projekt ma dwa lokalne tryby, które rozwiązują **różne zadania**. Mylenie ich prowadzi
-do mylnych wniosków z liczb.
+```
+   część (opis materiałowy)
+        │
+        ├─ [0] overrides.yaml — przypięta przez eksperta?          → koniec, 100% pewne
+        │
+        ├─ [1] klasyfikator uczony na częściach już opisanych
+        │      margines pewności wystarczający?                     → znany typ
+        │
+        └─ [2] niepewne ALBO typ, którego nie zna
+               fraza typu + cechy fizyczne → grupowanie
+               → nazwanie przez LLM → kolejka do przeglądu
+                        │
+        [3] ekspert poprawia ────┘  poprawka wraca do warstwy 0 i do treningu
+```
 
-| tryb | zadanie | czy widzi etykiety Rudolfa | wynik |
+Zmierzone uczciwie (out-of-fold, na wierszach, części z `to_cluster`):
+
+| trening | trafność | ARI | klas w taksonomii |
 |---|---|---|---|
-| **`discover`** (domyślny) | zbuduj podział **od zera** — lokalny odpowiednik toru chmurowego | **nie** | ARI 0.72 offline / z chmurą wyżej |
-| `classify` | odtwarzaj **istniejącą** taksonomię na nowych częściach | tak, uczy się na nich | ARI 0.954 |
+| tylko `to_cluster` (962 PN) | 96.8% | 0.958 | 64 |
+| **+ `cla_bez_tbd.xlsx` (2074 PN)** | **95.7%** | 0.956 | **99** |
+| *odniesienie: chmura, ~45 zapytań* | – | *0.885* | – |
 
-Liczby z tych dwóch wierszy **nie są porównywalne**. `classify` rozwiązuje łatwiejsze
-zadanie — dostaje gotowe odpowiedzi i ma je powtórzyć. Uczciwe odniesienie dla `discover`
-to tor chmurowy: **ARI 0.885 przy ~45 zapytaniach agentowych**.
+Dodatkowy korpus kosztuje 1.1 pp trafności, ale rozszerza taksonomię z 64 do 99 klas.
+Spadek ma znaną przyczynę: dwie wersje podziału tworzą bliźniacze klasy (`BALL` obok
+`BALL JOINT`, `COIL` i `MAGNET` obok `COIL / MAGNET`). Dla systemu, do którego trafią
+części typów spoza `to_cluster`, pokrycie jest warte tej ceny. Wyłącza się flagą
+`--bez-dodatkowych`.
 
----
+**Każda część dostaje propozycję.** Nawet ta, która w warstwie 2 została sama — zamiast
+wpadać do worka `NEEDS_REVIEW` dostaje własną nazwę z frazy typu (`NEW: WIRE SOLDER`).
+Niepewność to osobna flaga `needs_review`, nie brak odpowiedzi. Ekspert w kolejce widzi
+propozycję do zaakceptowania, a nie pustkę.
+
+### Tryb `discover` — tylko na zimny start
+
+Zbiór, dla którego **nikt nic nie opisał**, nie ma na czym uczyć warstwy 1. Wtedy
+`run_local.py --tryb discover` buduje podział od zera (ARI 0.704, opis niżej). To nie jest
+codzienna ścieżka i dlatego nie ma go w UI — skoro ekspert coś już opisał, ignorowanie tej
+pracy przy każdym uruchomieniu nie ma sensu.
 
 ## 0a. Tryb `discover` — jak działa
 

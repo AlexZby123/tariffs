@@ -66,9 +66,13 @@ export default function LocalPanel() {
   const [apiKey, setApiKey] = useState("");
   const [editingKey, setEditingKey] = useState(false);
 
-  const [mode, setMode] = useState<"discover" | "classify">("discover");
-  const [grouping, setGrouping] = useState<"cloud" | "local">("cloud");
-  const [physicsWeight, setPhysicsWeight] = useState(0.3);
+  // Jeden proces, bez wyboru trybu: model uczy sie na czesciach juz opisanych,
+  // a to, czego nie jest pewny albo czego nie zna, przejmuje warstwa odkrywcza
+  // i nazywa LLM. Tryb "discover" (budowanie od zera, bez zadnych etykiet)
+  // zostaje dostepny z CLI - to scenariusz zimnego startu, nie codzienna praca.
+  const mode = "classify" as const;
+  const grouping = "cloud" as const;
+  const physicsWeight = 0.3;
   const [advanced, setAdvanced] = useState(false);
   const [accuracyTarget, setAccuracyTarget] = useState(0.999);
   const [discoveryThreshold, setDiscoveryThreshold] = useState(0.6);
@@ -211,41 +215,14 @@ export default function LocalPanel() {
       <section className="run-card">
         <div>
           <p className="eyebrow">LOCAL TRACK — RUNS ON THIS MACHINE</p>
-          <h2>{mode === "discover" ? "Discovery clustering" : "Hybrid clustering"}</h2>
+          <h2>Cluster parts</h2>
           <p className="hint">
-            {mode === "discover"
-              ? "Part types are extracted from the descriptions, combined with physical features (weight, volume, value per piece) and grouped into functional types. One cloud request per run supplies the product knowledge that text alone cannot."
-              : "Known part types are assigned by a classifier trained on your existing labels. Parts it is not sure about are grouped separately and land in your review queue."}
+            Parts of a type your experts already described are assigned
+            automatically. Anything the model is unsure about, or a type it has
+            never seen, is grouped separately, named by the cloud model and put
+            in your review queue. Every correction you make there is folded back
+            into training.
           </p>
-        </div>
-
-        <div className="mode-switch">
-          <button
-            className={mode === "discover" ? "mode active" : "mode"}
-            onClick={() => setMode("discover")}
-          >
-            <Sparkles size={15} />
-            <span>
-              <b>Build from scratch</b>
-              <small>
-                No existing labels. The system decides which part types exist —
-                the local counterpart of the cloud agent pipeline.
-              </small>
-            </span>
-          </button>
-          <button
-            className={mode === "classify" ? "mode active" : "mode"}
-            onClick={() => setMode("classify")}
-          >
-            <Cpu size={15} />
-            <span>
-              <b>Learn existing labels</b>
-              <small>
-                Reproduces a taxonomy someone already built, on new parts.
-                Needs labelled data; reaches 95.6% accuracy.
-              </small>
-            </span>
-          </button>
         </div>
 
         <div className="apikey-row">
@@ -296,73 +273,7 @@ export default function LocalPanel() {
           Advanced settings
         </button>
 
-        {advanced && mode === "discover" && (
-          <div className="run-inputs local-inputs">
-            <label>
-              Phrase grouping
-              <select
-                value={grouping}
-                onChange={(event) =>
-                  setGrouping(event.target.value as typeof grouping)
-                }
-              >
-                <option value="cloud" disabled={!llmReady}>
-                  Cloud — 1 request{llmReady ? "" : " (needs API key)"}
-                </option>
-                <option value="local">Fully offline</option>
-              </select>
-              <small className="hint">
-                Descriptions collapse to a few hundred distinct type phrases.
-                Grouping those into functional types is where product knowledge
-                is needed — Rudolf puts BRACKET and GUIDE RING in one class, and
-                no text algorithm derives that. Offline grouping reaches ARI
-                0.70; the cloud pipeline it replaces reaches 0.885 using ~45
-                requests instead of one.
-              </small>
-            </label>
-
-            <label>
-              Physical features weight
-              <input
-                type="number"
-                step="0.05"
-                min="0"
-                max="0.6"
-                value={physicsWeight}
-                onChange={(event) =>
-                  setPhysicsWeight(Number(event.target.value))
-                }
-              />
-              <small className="hint">
-                How much weight, volume, value and density per piece count
-                against the text. They separate types the wording does not: an
-                O-ring is 0.2 g, a ball 1.4 g, a sensor 32 g, a hydraulic unit
-                650 g. Measured optimum is 0.3 on disjoint halves of the data;
-                past 0.4 the physics starts drowning the description.
-              </small>
-            </label>
-
-            <label>
-              Part-number limit
-              <input
-                type="number"
-                min="1"
-                placeholder="empty = all 1025"
-                value={limit ?? ""}
-                onChange={(event) =>
-                  setLimit(event.target.value ? Number(event.target.value) : null)
-                }
-              />
-              <small className="hint">
-                For quick tests only. Takes the first N part numbers in file
-                order, and the file is grouped by product family — so a small
-                sample is badly skewed.
-              </small>
-            </label>
-          </div>
-        )}
-
-        {advanced && mode === "classify" && (
+        {advanced && (
           <div className="run-inputs local-inputs">
             <label>
               Review workload
@@ -372,22 +283,22 @@ export default function LocalPanel() {
                   setAccuracyTarget(Number(event.target.value))
                 }
               >
-                <option value={0.98}>Smallest queue — 5% of parts</option>
-                <option value={0.99}>Small queue — 9%</option>
-                <option value={0.995}>Balanced — 12%</option>
-                <option value={0.999}>Safest — 17% (default)</option>
+                <option value={0.98}>Smallest queue — about 5% of parts</option>
+                <option value={0.99}>Small queue — about 9%</option>
+                <option value={0.995}>Balanced — about 12%</option>
+                <option value={0.999}>Safest — about 17% (default)</option>
               </select>
               <small className="hint">
-                How accurate the classifier must be on what it assigns by
-                itself. Safer means fewer silent mistakes and better detection
-                of genuinely new part types, at the cost of more parts landing
-                in your queue. At the default it made no mistakes at all on the
-                83% it accepted.
+                How accurate the model must be on what it assigns by itself.
+                Safer means fewer silent mistakes and better detection of
+                genuinely new part types, at the cost of more parts landing in
+                your queue. At the default it made no mistakes at all on the
+                parts it accepted.
               </small>
             </label>
 
             <label>
-              Discovery threshold
+              Grouping of unknown parts
               <input
                 type="number"
                 step="0.05"
@@ -399,12 +310,12 @@ export default function LocalPanel() {
                 }
               />
               <small className="hint">
-                How far apart two parts may be and still form one discovered
-                group. Affects only the review queue, never parts the classifier
-                assigned. Lower (0.4) splits into more, smaller, cleaner groups;
-                higher (0.8) merges into fewer, larger ones and risks mixing
-                different types. Merging two clean groups costs you one click —
-                untangling a wrong merge does not.
+                How far apart two unknown parts may be and still form one
+                proposed type. Affects only the review queue, never parts the
+                model assigned itself. Lower splits into more, smaller, cleaner
+                groups; higher merges into fewer and risks mixing types. Merging
+                two clean groups costs you one click — untangling a wrong merge
+                does not.
               </small>
             </label>
 
@@ -413,7 +324,7 @@ export default function LocalPanel() {
               <input
                 type="number"
                 min="1"
-                placeholder="empty = all 1025"
+                placeholder="empty = all"
                 value={limit ?? ""}
                 onChange={(event) =>
                   setLimit(event.target.value ? Number(event.target.value) : null)
@@ -422,8 +333,7 @@ export default function LocalPanel() {
               <small className="hint">
                 For quick tests only. Takes the first N part numbers in file
                 order, and the file is grouped by product family — so a small
-                sample is badly skewed and row-level evaluation is skipped.
-                Leave empty to judge quality.
+                sample is badly skewed. Leave empty to judge quality.
               </small>
             </label>
           </div>

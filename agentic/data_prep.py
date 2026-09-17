@@ -170,6 +170,37 @@ def wczytaj_etykiety_rudolfa() -> pd.Series:
     return r["Cluster NAME"].astype(str).str.strip()
 
 
+#: Dodatkowy korpus Rudolfa: etykiety w tym samym pliku (kolumna Cluster NAME).
+#: 1615 PN / 106 klas, z czego 1112 PN i ~36 nazw klastrow nie wystepuje w
+#: to_cluster.csv. cla 1.xlsx i cla_weryfikacja.xlsx maja identyczna zawartosc.
+PLIK_CLA_XLSX = KATALOG / "cla_bez_tbd.xlsx"
+ARKUSZ_CLA_XLSX = "default_1"
+
+
+def wczytaj_dodatkowe_etykiety(sciezka: Path | None = None) -> pd.DataFrame:
+    """Dodatkowy zbior czesci opisanych przez Rudolfa, zagregowany do PN.
+
+    Zwraca ramke z kolumnami PN / MATDESC / y. Pusta ramka, gdy pliku nie ma -
+    brak dodatkowego korpusu nie jest bledem, tylko mniejszym pokryciem.
+    """
+    sciezka = sciezka or PLIK_CLA_XLSX
+    if not sciezka.exists():
+        return pd.DataFrame(columns=["PN", "MATDESC", "y"])
+
+    df = pd.read_excel(sciezka, sheet_name=ARKUSZ_CLA_XLSX, dtype=str)
+    df.columns = df.columns.str.strip()
+    df["y"] = df["Cluster NAME"].astype(str).str.strip()
+    df = df[~df["y"].str.lower().isin(["tbd", "nan", "none", ""])]
+    df["MATDESC"] = (_fillna(df["Material Description ACDC"]) + " | "
+                     + _fillna(df["Material Description SCND"])).str.strip(" |")
+
+    agg = df.groupby(df[PN_KOL].astype(str)).agg(
+        MATDESC=("MATDESC", lambda s: " ; ".join(sorted({x for x in s if x.strip()}))[:400]),
+        y=("y", lambda s: s.value_counts().index[0]),
+    ).reset_index().rename(columns={PN_KOL: "PN"})
+    return agg[["PN", "MATDESC", "y"]]
+
+
 def wczytaj_etykiety_cla() -> list[str]:
     """Unikatowe nazwy klastrow z cla.csv (Cluster NAME, bez 'tbd').
 

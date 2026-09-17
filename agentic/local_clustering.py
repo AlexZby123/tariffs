@@ -46,6 +46,7 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.model_selection import StratifiedKFold
 from sklearn.svm import LinearSVC
 
+import discover as dk
 from encoders import BaseEncoder, SupConEncoder, zbuduj_enkoder
 
 KATALOG = Path(__file__).parent
@@ -169,6 +170,12 @@ class KonfiguracjaHybrydy:
 
     min_licznosc_nowego: int = 2
     """Grupy mniejsze niz tyle PN dostaja etykiete DO_PRZEGLADU zamiast NOWY_n."""
+
+    waga_fizyki: float = 0.30
+    """WARSTWA 2: udzial cech fizycznych (waga/objetosc/wartosc na sztuke).
+
+    Ta sama przestrzen co w trybie odkrywczym - fraza typu + opis + fizyka.
+    Zmierzone tam: samo TF-IDF opisu ARI 0.599, z fraza i fizyka 0.715."""
 
     min_probek_klasy: int = 2
     """Klasy o mniejszej licznosci nie wchodza do treningu warstwy 1.
@@ -443,22 +450,41 @@ class HybrydowyKlasyfikator:
         # --- WARSTWA 2 ---
         idx_reszta = pozostale[~pewne]
         if len(idx_reszta):
-            tekst_reszty = buduj_teksty(out.iloc[idx_reszta], cfg.pola)
-            Zb = self.enkoder_bazowy.transform(tekst_reszty)
+            Zb = self._cechy_odkrywcze(out.iloc[idx_reszta])
             grupy = self._odkryj(Zb)
             licz = pd.Series(grupy).value_counts()
-            # numeracja NOWY_n od najliczniejszej grupy
-            duze = [g for g in licz.index if licz[g] >= cfg.min_licznosc_nowego]
-            mapa = {g: f"{PREFIKS_NOWY}{i + 1}" for i, g in enumerate(duze)}
-            nazwy[idx_reszta] = [mapa.get(g, ETYKIETA_PRZEGLAD) for g in grupy]
+            # Kazda grupa dostaje numer, takze jednoelementowa. Wczesniej
+            # singletony ladowaly w jednym worku NEEDS_REVIEW - a dla eksperta
+            # "NEW: WIRE SOLDER" jest duzo bardziej uzyteczne niz "NEEDS_REVIEW",
+            # bo od razu widzi propozycje zamiast pustki. Wszystkie i tak sa
+            # oznaczone flaga do przegladu.
+            kolejnosc = licz.index.tolist()
+            mapa = {g: f"{PREFIKS_NOWY}{i + 1}" for i, g in enumerate(kolejnosc)}
+            nazwy[idx_reszta] = [mapa[g] for g in grupy]
             zrodla[idx_reszta] = ZRODLO_ODKRYTY
             pewnosc[idx_reszta] = marg[~pewne]
             if verbose:
+                n_singli = int((licz < cfg.min_licznosc_nowego).sum())
                 print(f"  [layer 2] {len(idx_reszta)} uncertain parts -> "
-                      f"{len(duze)} candidate groups + "
-                      f"{int((np.array(nazwy[idx_reszta]) == ETYKIETA_PRZEGLAD).sum())} "
-                      f"singletons for review")
+                      f"{len(kolejnosc)} proposed types "
+                      f"({n_singli} of them a single part)")
         return self._zloz(out, nazwy, zrodla, pewnosc)
+
+    def _cechy_odkrywcze(self, df: pd.DataFrame) -> np.ndarray:
+        """Przestrzen dla WARSTWY 2: fraza typu + opis + cechy fizyczne.
+
+        Ta sama, ktorej uzywa tryb odkrywczy - tam zmierzona jako wyraznie
+        lepsza od samego embeddingu opisu (ARI 0.715 vs 0.599). Gdy w danych
+        brakuje kolumn fizycznych, przestrzen degraduje sie do samego tekstu.
+        """
+        try:
+            Z, _ = dk.przestrzen_cech(df.reset_index(drop=True),
+                                      dk.KonfiguracjaOdkrywania(
+                                          waga_fizyki=self.cfg.waga_fizyki,
+                                          prog_odleglosci=self.cfg.prog_odkrywania))
+            return Z
+        except Exception:  # noqa: BLE001 - brak kolumn / zbyt malo danych
+            return self.enkoder_bazowy.transform(buduj_teksty(df, self.cfg.pola))
 
     def _odkryj(self, Z: np.ndarray) -> np.ndarray:
         """Aglomeracyjne klastrowanie reszty progiem odleglosci (k nieznane z gory)."""
@@ -474,6 +500,8 @@ class HybrydowyKlasyfikator:
         out["cluster_name"] = nazwy
         out["source"] = zrodla
         out["confidence"] = pewnosc
+        # wszystko, co przeszlo przez warstwe 2, czeka na decyzje eksperta
+        out["needs_review"] = zrodla == ZRODLO_ODKRYTY
         return out
 
     # --------------------------------------------------------------- IO ----
