@@ -248,21 +248,37 @@ def tryb_odkrywczy(args, rekordy: pd.DataFrame, pn_df: pd.DataFrame,
     print("\n[2] Assigning parts...")
     wynik_pn = model.predict(pn_df, overrides=overrides)
 
-    print("\n[3] External check against Rudolf (labels NOT used to build this)...")
-    met = _ocen_odkrycie(wynik_pn, y, maska)
-    if met:
-        print(f"  ARI={met['ari']:.3f}  pair_f1={met['pair_f1']:.3f}  NMI={met['nmi']:.3f}"
-              f"  (on {met['n']} labelled parts it was confident about)")
-        print(f"  reference: cloud agent pipeline ARI 0.885 using ~45 requests")
-
     out = WYNIKI_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_discover_{cfg.grupowanie}"
     met_wiersze = zapisz_wyniki(out, wynik_pn, rekordy, rudolf)
+
+    print("\n[3] External check against Rudolf (labels NOT used to build this)...")
+    met = _ocen_odkrycie(wynik_pn, y, maska)
+    # Dwie liczby, bo mierza co innego i mylenie ich prowadzilo do zlych wnioskow.
+    # Porownywalna z torem chmurowym jest TA PIERWSZA: te same wiersze, to samo
+    # pokrycie (kolejka do przegladu wliczona jako wlasny klaster), ten sam
+    # evaluate.ocen. W trybie discover nie jest zawyzona - zadna etykieta nie
+    # brala udzialu w budowaniu podzialu.
+    if met_wiersze:
+        print(f"  COMPARABLE with the cloud track (all rows, full coverage):")
+        print(f"    ARI={met_wiersze['ari']:.3f}  pair_f1={met_wiersze['pair_f1']:.3f}  "
+              f"NMI={met_wiersze['nmi']:.3f}")
+        print(f"    cloud agent pipeline on the same measure: ARI 0.885 (~45 requests)")
+    if met:
+        print(f"  narrower view (per part number, only the ones it was confident about, "
+              f"n={met['n']}):")
+        print(f"    ARI={met['ari']:.3f}  pair_f1={met['pair_f1']:.3f}  NMI={met['nmi']:.3f}")
     d = model.diagnostyka
-    oof_zastepczy = {"trafnosc": 0.0, "ari": met.get("ari", 0.0) if met else 0.0,
-                     "pair_f1": met.get("pair_f1", 0.0) if met else 0.0,
-                     "nmi": met.get("nmi", 0.0) if met else 0.0,
-                     "n_ocenianych": met.get("n", 0) if met else 0}
-    zapisz_json_odkrycie(out, wynik_pn, rekordy, model, oof_zastepczy, args)
+    miary = {
+        # porownywalne z chmura - to jest liczba, ktora sie liczy
+        "ari": (met_wiersze or {}).get("ari", 0.0),
+        "pair_f1": (met_wiersze or {}).get("pair_f1", 0.0),
+        "nmi": (met_wiersze or {}).get("nmi", 0.0),
+        # wezszy widok: per PN, tylko czesci pewne
+        "ari_pewne": (met or {}).get("ari", 0.0),
+        "pair_f1_pewne": (met or {}).get("pair_f1", 0.0),
+        "n_ocenianych": (met or {}).get("n", 0),
+    }
+    zapisz_json_odkrycie(out, wynik_pn, rekordy, model, miary, args)
     print(f"\n  types discovered: {d.n_grup} | parts for review: {d.n_do_przegladu}")
     print(f"  results -> {out.relative_to(KATALOG)}")
     print("\nDone.")
@@ -270,8 +286,9 @@ def tryb_odkrywczy(args, rekordy: pd.DataFrame, pn_df: pd.DataFrame,
 
 def _ocen_odkrycie(wynik_pn: pd.DataFrame, y: np.ndarray, maska: np.ndarray
                    ) -> Optional[dict]:
-    """ARI/NMI wzgledem Rudolfa - wylacznie jako zewnetrzny sprawdzian."""
-    ma_etykiete = maska & (wynik_pn["cluster_name"].values != dk.ETYKIETA_PRZEGLAD)
+    """ARI/NMI na czesciach, ktorych model byl pewny - wezszy widok pomocniczy."""
+    pewne = ~wynik_pn.get("needs_review", pd.Series(False, index=wynik_pn.index)).values
+    ma_etykiete = maska & pewne
     if ma_etykiete.sum() < 20:
         return None
     met = evaluate.metryki(y[ma_etykiete], wynik_pn.loc[ma_etykiete, "cluster_name"].values)
@@ -329,6 +346,7 @@ def _czesci_i_klastry(wynik_pn: pd.DataFrame, rekordy: pd.DataFrame
         "bu": str(r.get("BU", "")),
         "n_rows": int(wiersze_na_pn.get(str(r["PN"]), 0)),
         "type_phrase": str(r.get("type_phrase", "")),
+        "needs_review": bool(r.get("needs_review", False)),
     } for _, r in wynik_pn.iterrows()]
 
     agg = (wynik_pn.groupby("cluster_name")
@@ -410,6 +428,8 @@ def zapisz_json_odkrycie(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFram
             "ari": round(met.get("ari", 0.0), 4),
             "pair_f1": round(met.get("pair_f1", 0.0), 4),
             "nmi": round(met.get("nmi", 0.0), 4),
+            "ari_confident_only": round(met.get("ari_pewne", 0.0), 4),
+            "pair_f1_confident_only": round(met.get("pair_f1_pewne", 0.0), 4),
             "n_evaluated": int(met.get("n_ocenianych", 0)),
             "n_classes": d.n_grup,
             "n_type_phrases": d.n_fraz,

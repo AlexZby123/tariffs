@@ -715,3 +715,4 @@ textarea {
   font: 12px/1.45 Georgia, serif;
   color: var(--muted);
 }
+.badge.review { margin-left: 6px; background: #fbe6c8; color: #8a5a10; }

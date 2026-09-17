@@ -28,6 +28,7 @@ type Part = {
   bu: string;
   n_rows: number;
   type_phrase: string;
+  needs_review: boolean;
 };
 type Cluster = {
   name: string;
@@ -171,6 +172,7 @@ export default function LocalPanel() {
       .filter(
         (p) =>
           !reviewOnly ||
+          p.needs_review ||
           p.cluster === result.review_label ||
           (result.mode === "classify" && p.source === "discovered"),
       )
@@ -189,7 +191,7 @@ export default function LocalPanel() {
     if (!result) return 0;
     const parts = result.parts ?? [];
     return result.mode === "discover"
-      ? parts.filter((p) => p.cluster === result.review_label).length
+      ? parts.filter((p) => p.needs_review).length
       : parts.filter((p) => p.source === "discovered").length;
   }, [result]);
 
@@ -444,15 +446,15 @@ export default function LocalPanel() {
             <>
               <div className="metric">
                 <b>{(result.metrics?.ari ?? 0).toFixed(3)}</b>
-                <span>ARI vs Rudolf — external check</span>
+                <span>ARI — same measure as cloud (0.885)</span>
+              </div>
+              <div className="metric">
+                <b>{(result.metrics?.ari_confident_only ?? 0).toFixed(3)}</b>
+                <span>ARI on confident parts only</span>
               </div>
               <div className="metric">
                 <b>{result.metrics?.n_classes}</b>
                 <span>part types discovered</span>
-              </div>
-              <div className="metric">
-                <b>{result.metrics?.n_type_phrases}</b>
-                <span>distinct type phrases</span>
               </div>
               <div className="metric">
                 <b>{result.metrics?.phrases_grouped_by_llm || 0}</b>
@@ -463,8 +465,8 @@ export default function LocalPanel() {
                 <span>parts to review</span>
               </div>
               <div className="metric">
-                <b>{result.metrics?.physics_weight}</b>
-                <span>physics weight used</span>
+                <b>{result.metrics?.llm_requests ?? 0}</b>
+                <span>cloud requests used</span>
               </div>
             </>
           ) : (
@@ -576,6 +578,9 @@ export default function LocalPanel() {
                         </td>
                         <td>
                           {p.cluster}
+                          {p.needs_review && !pinned && (
+                            <span className="badge review">low confidence</span>
+                          )}
                           {pinned && (
                             <span className="badge pinned">
                               <Pin size={11} /> pinned

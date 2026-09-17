@@ -64,6 +64,40 @@ Dwie rzeczy z tej tabeli są istotne:
    chmury. Samą frazą nie da się uratować tylko 2.2% części (21 sztuk), bo ich fraza trafia
    do kilku klas naraz (`BALL` → BALL vs BALL JOINT, `COVER` → CLIP & CLAMP vs COVER ECU).
 
+### Jak mierzymy — i dlaczego wcześniej mierzyliśmy źle
+
+Raportowałem ARI liczone **tylko na częściach, których system był pewny**, a tor chmurowy
+mierzy się **na wszystkich wierszach**. To nie było porównywalne i zawyżało nasz wynik.
+
+Dodatkowo kod podmieniał nazwę klastra niepewnej części na `NEEDS_REVIEW`. 15% części
+lądowało w jednym worku, co samo w sobie zbijało porównywalne ARI o ponad 0.2 — bo chmura
+**zgaduje każdą część**, a my odmawialiśmy odpowiedzi.
+
+Teraz każda część zachowuje swoją propozycję, a niepewność jest osobną flagą
+(`needs_review`). Ekspert w kolejce widzi „raczej SEAL, ale słabo" zamiast `NEEDS_REVIEW`,
+a pomiar jest uczciwy. Raportowane są dwie liczby:
+
+| miara | co znaczy |
+|---|---|
+| **ARI (wszystkie wiersze, pełne pokrycie)** | **porównywalna z torem chmurowym — ta się liczy** |
+| ARI na częściach pewnych | węższy widok pomocniczy, zawsze wyższy |
+
+Efekt zmiany na grupowaniu lokalnym: porównywalne ARI 0.484 → **0.666**.
+
+### Granulacja taksonomii
+
+Pierwszy przebieg na Model Farm dał **43 typy** przy 77 u eksperta — wyraźnie za grubo,
+a zbyt grube scalanie kosztuje w ARI tyle samo co zbyt drobne rozbicie.
+
+Przyczyna jest w partiach: model widzi 90 fraz z 274, więc polecenie „40–90 grup w całym
+zbiorze" jest dla niego nieweryfikowalne. Teraz cel jest **przeliczany na partię** („ta
+porcja powinna użyć ok. 20–30 nazw grup, z tego ok. N nowych"), co model może faktycznie
+zrealizować.
+
+Docelowa granulacja (`docelowo_typow`, domyślnie 60–90) to decyzja produktowa o tym, jak
+drobny ma być podział — nie parametr do strojenia pod wynik. Tor chmurowy w tym repo celuje
+w 40–90; zawęziliśmy do 60–90 po zobaczeniu, że 43 to za mało.
+
 ### Grupowanie fraz przez LLM — partiami
 
 Pierwsza wersja wysyłała wszystkie ~274 frazy w jednym zapytaniu i kazała modelowi

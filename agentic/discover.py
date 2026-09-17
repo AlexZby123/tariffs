@@ -194,7 +194,15 @@ class KonfiguracjaOdkrywania:
     grup jednoelementowych), co zaniza wynik i zasypuje eksperta."""
 
     grupowanie: str = "cloud"
-    """'cloud' (1 zapytanie do LLM) albo 'local' (w pelni offline)."""
+    """'cloud' (kilka zapytan do LLM) albo 'local' (w pelni offline)."""
+
+    docelowo_typow: tuple[int, int] = (60, 90)
+    """Ile typow funkcjonalnych ma miec taksonomia (min, max).
+
+    To decyzja produktowa o granulacji, nie parametr do strojenia: tor chmurowy
+    w tym repo celuje w 40-90. Zawezone do 60-90, bo pierwszy przebieg na Model
+    Farm wylazl na 43 typy - wyraznie za grubo, skoro ekspercki podzial ma 77.
+    Zbyt grube scalanie kosztuje w ARI tyle samo co zbyt drobne rozbicie."""
 
     seed: int = 0
 
@@ -227,7 +235,8 @@ SYSTEM_GRUPOWANIA = (
     "is made of, and not its size. Merge synonyms and closely related types into one group "
     "(e.g. SCREW + BOLT + NUT + STUD + PIN belong together; BRACKET + SUPPORT + GUIDE RING "
     "+ NEEDLE BEARING belong together; CLIP + CLAMP + CABLE TIE belong together). "
-    "Aim for 40-90 groups across the whole dataset. Use SHORT, UPPERCASE group names."
+    "Use SHORT, UPPERCASE group names. Do not lump together parts that do a different "
+    "job just because they sound similar - a SENSOR is not an ECU, a COVER is not a SEAL."
 )
 
 #: Ile fraz w jednym zapytaniu. Odpowiedz musi zmiescic sie w budzecie tokenow -
@@ -269,8 +278,8 @@ def _parsuj_przypisania(obj) -> dict[int, str]:
 
 
 def grupuj_frazy_llm(frazy_z_waga: dict[str, float], client,
-                     rozmiar_partii: int = PARTIA_FRAZ, verbose: bool = True
-                     ) -> dict[str, str]:
+                     rozmiar_partii: int = PARTIA_FRAZ, verbose: bool = True,
+                     docelowo: tuple[int, int] = (60, 90)) -> dict[str, str]:
     """Grupuje frazy typu przez LLM, partiami, z odpornoscia na urwana odpowiedz.
 
     Format odpowiedzi jest celowo zwiezly - {"1": "GROUP"} zamiast przepisywania
@@ -304,9 +313,21 @@ def grupuj_frazy_llm(frazy_z_waga: dict[str, float], client,
                    "instead of inventing near-duplicates:\n"
                    + ", ".join(sorted(set(utworzone))) + "\n")
 
+        # Cel granulacji przeliczony NA TE PARTIE. Model widzi tylko jej frazy,
+        # wiec globalne "40-90 grup w calym zbiorze" jest dla niego nieweryfikowalne
+        # i konczylo sie zbyt grubym scalaniem (43 typy zamiast ~75).
+        udzial = len(partia) / len(frazy)
+        cel_min = max(2, round(docelowo[0] * udzial))
+        cel_max = max(cel_min + 1, round(docelowo[1] * udzial))
+        nowych = max(0, cel_min - len(set(utworzone)))
+
         user = (
             f"Assign each of the {len(partia)} numbered phrases below to a coarse "
             "functional part type.\n"
+            f"These phrases are one slice of a larger set. Across the whole set the "
+            f"taxonomy should end up with {docelowo[0]}-{docelowo[1]} groups, so this "
+            f"slice should use roughly {cel_min}-{cel_max} distinct group names"
+            + (f" (about {nowych} of them new)." if nowych else ".") + "\n"
             'Return ONLY compact JSON mapping every number to a group name: '
             '{"assignments": {"1": "GROUP NAME", "2": "GROUP NAME", ...}}\n'
             "Do not repeat the phrases themselves - only the numbers.\n"
@@ -410,7 +431,8 @@ class KlastrowaczOdkrywczy:
             wagi = self._mediany_wag(pn_df, frazy, unikalne)
             try:
                 zapytan_przed = getattr(client, "calls", 0)
-                mapa = grupuj_frazy_llm(wagi, client, verbose=verbose)
+                mapa = grupuj_frazy_llm(wagi, client, verbose=verbose,
+                                        docelowo=cfg.docelowo_typow)
                 self.diagnostyka.n_fraz_z_llm = len(mapa)
                 self.diagnostyka.n_zapytan = getattr(client, "calls", 0) - zapytan_przed
                 if verbose:
@@ -519,25 +541,32 @@ class KlastrowaczOdkrywczy:
         pewnosc = self._pewnosc(Z, grupy)
         zrodla = np.full(len(out), ZRODLO_ODKRYTE, dtype=object)
 
-        # niepewne trafiaja do kolejki eksperta, ale zachowuja propozycje nazwy
-        slabe = pewnosc < self.prog_pewnosci
-        grupy = np.where(slabe, ETYKIETA_PRZEGLAD, grupy)
+        # Czesc niepewna NIE traci swojej propozycji - dostaje tylko flage.
+        # Wczesniej jej nazwa byla podmieniana na NEEDS_REVIEW, co szkodzilo
+        # dwa razy: ekspert w kolejce widzial "NEEDS_REVIEW" zamiast "raczej
+        # SEAL, ale slabo", a w ewaluacji 15% czesci ladowalo w jednym wielkim
+        # worku, co zanizalo ARI o ponad 0.2 wzgledem toru chmurowego, ktory
+        # zgaduje KAZDA czesc. Teraz i my zgadujemy kazda, a niepewnosc jest
+        # osobna kolumna.
+        do_przegladu = pewnosc < self.prog_pewnosci
 
-        # WARSTWA 0 nadpisuje wszystko
+        # WARSTWA 0 nadpisuje wszystko i zdejmuje flage przegladu
         if overrides:
             trafione = out["PN"].astype(str).map(overrides)
             ma = trafione.notna().values
             grupy[ma] = trafione[ma].values
             zrodla[ma] = ZRODLO_OVERRIDE
             pewnosc[ma] = 1.0
+            do_przegladu[ma] = False
 
-        self.diagnostyka.n_do_przegladu = int((grupy == ETYKIETA_PRZEGLAD).sum())
+        self.diagnostyka.n_do_przegladu = int(do_przegladu.sum())
         if verbose:
-            print(f"  [discover] for review: {self.diagnostyka.n_do_przegladu} parts "
-                  f"(confidence < {self.prog_pewnosci:.2f})")
+            print(f"  [discover] flagged for review: {self.diagnostyka.n_do_przegladu} parts "
+                  f"(confidence < {self.prog_pewnosci:.2f}) - they keep their proposed type")
 
         out["cluster_name"] = grupy
         out["source"] = zrodla
         out["confidence"] = pewnosc
+        out["needs_review"] = do_przegladu
         out["type_phrase"] = frazy.values
         return out

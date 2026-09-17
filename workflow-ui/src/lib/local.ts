@@ -25,6 +25,7 @@ export type LocalPart = {
   bu: string;
   n_rows: number;
   type_phrase: string;
+  needs_review: boolean;
 };
 
 export type LocalCluster = {
