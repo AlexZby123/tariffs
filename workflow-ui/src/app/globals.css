@@ -772,3 +772,62 @@ textarea {
   background: var(--teal);
 }
 .pasek i.slaby { background: #e0a23c; }
+
+/* --- podglad czesci pod kursorem --- */
+
+.pod-lupa { cursor: help; }
+.pod-lupa:hover { text-decoration: underline dotted #aebbb4; }
+
+.podglad {
+  position: fixed;
+  z-index: 50;
+  width: 380px;
+  max-width: calc(100vw - 24px);
+  padding: 14px 16px;
+  border: 1px solid #aebbb4;
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgba(24, 38, 35, 0.16);
+  pointer-events: none;
+  font:
+    12.5px/1.5 ui-sans-serif,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    Arial,
+    sans-serif;
+}
+.podglad-naglowek {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.podglad-naglowek b { color: #135948; text-align: right; }
+.podglad-opis {
+  margin: 9px 0;
+  color: #33423d;
+  word-break: break-word;
+}
+.podglad-dane {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 14px;
+  margin: 0 0 10px;
+}
+.podglad-dane dt { color: var(--muted); }
+.podglad-dane dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.podglad-stopka {
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+.podglad-stopka p { margin: 0 0 6px; }
+.podglad-stopka p:last-child { margin: 0; }
+.podglad-stopka b { color: var(--foreground); }

@@ -32,6 +32,8 @@ type Part = {
   needs_review: boolean;
   description_raw: string;
   weight_g: number | null;
+  volume_cm3: number | null;
+  value_eur: number | null;
 };
 type Cluster = {
   name: string;
@@ -58,6 +60,9 @@ type RunState = {
 };
 
 const pct = (x: number | undefined) => `${((x ?? 0) * 100).toFixed(1)}%`;
+
+const liczba = (x: number | null, jedn: string, cyfry = 1) =>
+  x == null || !Number.isFinite(x) ? "—" : `${x.toFixed(cyfry)} ${jedn}`;
 
 /** Waga na sztuke w jednostce, ktora czyta sie bez liczenia zer. */
 function waga(g: number | null): string {
@@ -108,6 +113,9 @@ export default function LocalPanel() {
   const [clusterFilter, setClusterFilter] = useState<string | null>(null);
   const [reviewOnly, setReviewOnly] = useState(false);
   const [pending, setPending] = useState<Record<string, string>>({});
+  const [podglad, setPodglad] = useState<{ part: Part; x: number; y: number } | null>(
+    null,
+  );
 
   const runOptions = {
     inputFile: inputFile?.path ?? null,
@@ -528,7 +536,20 @@ export default function LocalPanel() {
                     return (
                       <tr key={p.pn} className={staged ? "pending" : ""}>
                         <td className="mono">{p.pn}</td>
-                        <td className="desc" title={p.description_raw || p.description}>
+                        <td
+                          className="desc pod-lupa"
+                          onMouseEnter={(e) =>
+                            setPodglad({ part: p, x: e.clientX, y: e.clientY })
+                          }
+                          onMouseMove={(e) =>
+                            setPodglad((biezacy) =>
+                              biezacy?.part.pn === p.pn
+                                ? { part: p, x: e.clientX, y: e.clientY }
+                                : biezacy,
+                            )
+                          }
+                          onMouseLeave={() => setPodglad(null)}
+                        >
                           {p.description}
                         </td>
                         <td className="mono do-prawej">{waga(p.weight_g)}</td>
@@ -635,6 +656,59 @@ export default function LocalPanel() {
           No results yet. Run the clustering to see clusters and the review
           queue.
         </p>
+      )}
+
+      {podglad && (
+        <aside
+          className="podglad"
+          style={{
+            left: Math.min(podglad.x + 18, 1100),
+            top: Math.max(12, podglad.y - 40),
+          }}
+        >
+          <div className="podglad-naglowek">
+            <span className="mono">{podglad.part.pn}</span>
+            <b>{podglad.part.cluster}</b>
+          </div>
+
+          <p className="podglad-opis">{podglad.part.description_raw}</p>
+
+          <dl className="podglad-dane">
+            <dt>Weight per piece</dt>
+            <dd>{waga(podglad.part.weight_g)}</dd>
+            <dt>Volume per piece</dt>
+            <dd>{liczba(podglad.part.volume_cm3, "cm³", 1)}</dd>
+            <dt>Value per piece</dt>
+            <dd>{liczba(podglad.part.value_eur, "EUR", 2)}</dd>
+            <dt>HS code (6)</dt>
+            <dd>{podglad.part.hs6 || "—"}</dd>
+            <dt>Business unit</dt>
+            <dd>{podglad.part.bu || "—"}</dd>
+            <dt>Rows in the file</dt>
+            <dd>{podglad.part.n_rows}</dd>
+            {podglad.part.type_phrase && (
+              <>
+                <dt>Type read from the text</dt>
+                <dd>{podglad.part.type_phrase}</dd>
+              </>
+            )}
+          </dl>
+
+          <div className="podglad-stopka">
+            <p>
+              <b>Used to place this part:</b>{" "}
+              {podglad.part.needs_review
+                ? "the description, the type phrase above, and weight, volume and value per piece."
+                : "the material description only."}
+            </p>
+            <p>
+              <b>Sent to the cloud model:</b>{" "}
+              {podglad.part.needs_review
+                ? "the description, as one of a few samples naming its group. Never the part number, weight, price or HS code."
+                : "nothing — this part never left the machine."}
+            </p>
+          </div>
+        </aside>
       )}
 
       <div className="console">

@@ -32,6 +32,8 @@ export type LocalPart = {
   needs_review: boolean;
   description_raw: string;
   weight_g: number | null;
+  volume_cm3: number | null;
+  value_eur: number | null;
 };
 
 export type LocalCluster = {

@@ -342,9 +342,13 @@ def _czesci_i_klastry(wynik_pn: pd.DataFrame, rekordy: pd.DataFrame
         # pokazujemy wersje bez numerow katalogowych i kodow wariantow
         "description": dp.opis_czytelny(r.get("MATDESC", ""), r["PN"])[:220],
         "description_raw": str(r.get("MATDESC", ""))[:300],
-        "weight_g": (round(float(r["waga_g"]), 2)
-                     if "waga_g" in wynik_pn.columns and pd.notna(r.get("waga_g"))
-                     else None),
+        # cechy fizyczne - te same, ktorych uzywa warstwa 2 przy grupowaniu
+        # nieznanych typow; pokazujemy je, zeby bylo widac na czym system pracuje
+        **{klucz: (round(float(r[kol]), 2)
+                   if kol in wynik_pn.columns and pd.notna(r.get(kol)) else None)
+           for klucz, kol in (("weight_g", "waga_g"),
+                              ("volume_cm3", "objetosc_cm3"),
+                              ("value_eur", "wartosc_eur"))},
         "cluster": str(r["cluster_name"]),
         "source": str(r["source"]),
         "confidence": round(float(r["confidence"]), 4),

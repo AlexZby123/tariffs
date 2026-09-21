@@ -502,6 +502,9 @@ class HybrydowyKlasyfikator:
         out["confidence"] = pewnosc
         # wszystko, co przeszlo przez warstwe 2, czeka na decyzje eksperta
         out["needs_review"] = zrodla == ZRODLO_ODKRYTY
+        # fraza typu wyciagnieta z opisu - warstwa 2 grupuje wlasnie po niej,
+        # wiec pokazujemy ja uzytkownikowi jako "co system z tego wyczytal"
+        out["type_phrase"] = out["MATDESC"].map(dk.fraza_typu) if "MATDESC" in out else ""
         return out
 
     # --------------------------------------------------------------- IO ----
