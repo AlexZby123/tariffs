@@ -232,6 +232,12 @@ export default function LocalPanel() {
       .slice(0, 300);
   }, [result, query, clusterFilter, reviewOnly]);
 
+  /** Typy zaproponowane przez system, spoza taksonomii, ktorej sie nauczyl. */
+  const newTypeCount = useMemo(
+    () => (result?.clusters ?? []).filter((c) => c.proposed).length,
+    [result],
+  );
+
   const reviewCount = useMemo(() => {
     if (!result) return 0;
     const parts = result.parts ?? [];
@@ -426,31 +432,25 @@ export default function LocalPanel() {
 
       {result && (
         <section className="metrics">
-          {/* Tylko liczby, na ktore uzytkownik reaguje. Miary jakosci modelu
-              (ARI, trafnosc out-of-fold, porownanie z torem chmurowym) zostaja
-              w logu i w pliku wynikowym - na ekranie byly zargonem. */}
+          {/* Same liczniki z TEGO przebiegu. Procenty jakosci (trafnosc,
+              pokrycie) pochodzily z walidacji na danych treningowych - przy
+              wgranym, nowym zbiorze nie opisuja niczego, co uzytkownik przed
+              chwila policzyl, wiec na ekranie byly mylace. Zostaja w logu. */}
           <div className="metric">
             <b>{(result.parts ?? []).length}</b>
             <span>parts clustered</span>
           </div>
           <div className="metric">
-            <b>{pct(result.metrics?.auto_assigned_share)}</b>
-            <span>assigned automatically</span>
-          </div>
-          <div
-            className="metric"
-            title="Measured in cross-validation on the parts your experts already described."
-          >
-            <b>{pct(result.metrics?.auto_assigned_accuracy)}</b>
-            <span>correct among those</span>
+            <b>{(result.parts ?? []).length - reviewCount}</b>
+            <span>assigned to known types</span>
           </div>
           <div className="metric warn">
             <b>{reviewCount}</b>
             <span>need your review</span>
           </div>
           <div className="metric">
-            <b>{(result.clusters ?? []).length}</b>
-            <span>part types</span>
+            <b>{newTypeCount}</b>
+            <span>new types proposed</span>
           </div>
         </section>
       )}
