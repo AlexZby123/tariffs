@@ -12,6 +12,7 @@ a wynik rozpropagowujemy na wszystkie wiersze -> mniej zapytan LLM.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -187,6 +188,67 @@ WARIANTY_CSV = [
     {"sep": ",", "encoding": "utf-8-sig"},
     {"sep": "\t", "encoding": "utf-8-sig"},
 ]
+
+
+#: Kod wewnetrzny producenta: same litery/cyfry posklejane kropka, myslnikiem
+#: lub ukosnikiem, bez zwyklych slow. Np. "F01G.29K.1H2-589", "0204.864.JT8-5W8".
+_KOD_WEWNETRZNY = re.compile(r"^[A-Z0-9]+([.\-/][A-Z0-9]+)+$", re.I)
+
+#: Zwykle slowo: co najmniej trzy litery i nic poza literami. Fragment, ktory
+#: nie ma ANI JEDNEGO takiego slowa, jest kodem albo wymiarem ("A-V/T/TPL/STD",
+#: "L=24,5MM", "D 25.4", "IBO2", "0") - dla czlowieka to szum.
+_ZWYKLE_SLOWO = re.compile(r"^[A-Za-z]{3,}$")
+
+
+def _ma_tresc(fragment: str) -> bool:
+    return any(_ZWYKLE_SLOWO.match(t.strip("()[],.")) for t in fragment.split())
+
+
+def opis_czytelny(matdesc: str, pn: str = "") -> str:
+    """Opis materialowy oczyszczony DO WYSWIETLENIA (nie do modelu).
+
+    Dane zrodlowe wklejaja w opis numer czesci i kody wewnetrzne, zostawiaja
+    artefakt Excela `_x000D_`, doklejaja warianty i wymiary, i powtarzaja te
+    sama nazwe po obu stronach '|':
+
+        "F01G1610HF - F01G.29K.1H2-589 PROTECTOR | PROTECTOR; 0" -> "PROTECTOR"
+        "helical spring | SPRING; IBO2"           -> "helical spring · SPRING"
+        "rubber gasket | SEPARATING SEAL; D 25.4" -> "rubber gasket · SEPARATING SEAL"
+
+    Model dostaje surowy MATDESC - to jest wylacznie kosmetyka dla czlowieka,
+    zeby w kolejce do przegladu czytal nazwe czesci, a nie numer katalogowy.
+    """
+    tekst = str(matdesc or "").replace("_x000D_", " ")
+    pn = str(pn or "").strip().upper()
+
+    fragmenty: list[str] = []
+    for czlon in re.split(r"[|;]", tekst):
+        czlon = re.sub(r"\s+", " ", czlon).strip(" -–—,")
+        # zdejmij numer czesci i kody wewnetrzne z POCZATKU
+        slowa = czlon.split()
+        while slowa:
+            pierwsze = slowa[0].strip("-–—,")
+            if not pierwsze:                       # samotny separator
+                slowa.pop(0)
+                continue
+            if pierwsze.upper() == pn or _KOD_WEWNETRZNY.match(pierwsze):
+                slowa.pop(0)
+                continue
+            break
+        czlon = " ".join(slowa).strip(" -–—,")
+        if czlon and _ma_tresc(czlon):
+            fragmenty.append(czlon)
+
+    # tylko DOKLADNE powtorzenia (bez wzgledu na wielkosc liter i spacje) -
+    # "SPRING" obok "helical spring" niesie tresc i ma zostac
+    wynik: list[str] = []
+    widziane: set[str] = set()
+    for f in fragmenty:
+        klucz = re.sub(r"\s+", " ", f).strip().lower()
+        if klucz not in widziane:
+            widziane.add(klucz)
+            wynik.append(f)
+    return " · ".join(wynik) or str(matdesc or "").strip()
 
 
 def wczytaj_plik_wejsciowy(sciezka: Path) -> pd.DataFrame:

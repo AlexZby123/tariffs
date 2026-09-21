@@ -30,6 +30,8 @@ export type LocalPart = {
   n_rows: number;
   type_phrase: string;
   needs_review: boolean;
+  description_raw: string;
+  weight_g: number | null;
 };
 
 export type LocalCluster = {

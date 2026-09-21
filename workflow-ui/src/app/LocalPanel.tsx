@@ -30,6 +30,8 @@ type Part = {
   n_rows: number;
   type_phrase: string;
   needs_review: boolean;
+  description_raw: string;
+  weight_g: number | null;
 };
 type Cluster = {
   name: string;
@@ -56,6 +58,27 @@ type RunState = {
 };
 
 const pct = (x: number | undefined) => `${((x ?? 0) * 100).toFixed(1)}%`;
+
+/** Waga na sztuke w jednostce, ktora czyta sie bez liczenia zer. */
+function waga(g: number | null): string {
+  if (g == null || !Number.isFinite(g)) return "—";
+  if (g >= 1000) return `${(g / 1000).toFixed(g >= 10000 ? 0 : 1)} kg`;
+  if (g >= 10) return `${Math.round(g)} g`;
+  if (g >= 1) return `${g.toFixed(1)} g`;
+  return `${g.toFixed(2)} g`;
+}
+
+/**
+ * Margines to surowy odstep miedzy najlepsza a druga klasa - liczba sama w
+ * sobie nic nie mowi. Pokazujemy ja jako pasek wzgledem progu, przy ktorym
+ * model przestaje ufac sobie samemu: pelny pasek = pewne, krotki = na granicy.
+ */
+function pewnoscProc(margines: number, prog: number): number {
+  if (!Number.isFinite(margines) || !prog) return 4;
+  // minimum 4%, zeby pasek przy marginesie bliskim zera czytal sie jako
+  // "bardzo malo", a nie jako brakujaca wartosc
+  return Math.max(4, Math.min(100, (margines / (prog * 2)) * 100));
+}
 
 export default function LocalPanel() {
   const [result, setResult] = useState<Result | null>(null);
@@ -521,9 +544,9 @@ export default function LocalPanel() {
                   <tr>
                     <th>Part number</th>
                     <th>Description</th>
+                    <th className="do-prawej">Weight</th>
                     <th>Cluster</th>
-                    <th>Assigned by</th>
-                    <th>{result.mode === "discover" ? "Fit" : "Margin"}</th>
+                    <th>Certainty</th>
                     <th>Pin permanently</th>
                   </tr>
                 </thead>
@@ -534,13 +557,14 @@ export default function LocalPanel() {
                     return (
                       <tr key={p.pn} className={staged ? "pending" : ""}>
                         <td className="mono">{p.pn}</td>
-                        <td className="desc" title={p.description}>
+                        <td className="desc" title={p.description_raw || p.description}>
                           {p.description}
                         </td>
+                        <td className="mono do-prawej">{waga(p.weight_g)}</td>
                         <td>
                           {p.cluster}
                           {p.needs_review && !pinned && (
-                            <span className="badge review">low confidence</span>
+                            <span className="badge review">needs a look</span>
                           )}
                           {pinned && (
                             <span className="badge pinned">
@@ -549,11 +573,21 @@ export default function LocalPanel() {
                           )}
                         </td>
                         <td>
-                          <span className={`badge src-${p.source}`}>
-                            {p.source}
+                          <span
+                            className="pasek"
+                            title={`margin ${p.confidence.toFixed(2)} · model stops trusting itself below ${(result.metrics?.confidence_threshold ?? 0).toFixed(2)}`}
+                          >
+                            <i
+                              className={p.needs_review ? "slaby" : ""}
+                              style={{
+                                width: `${pewnoscProc(
+                                  p.confidence,
+                                  result.metrics?.confidence_threshold ?? 1,
+                                )}%`,
+                              }}
+                            />
                           </span>
                         </td>
-                        <td className="mono">{p.confidence.toFixed(2)}</td>
                         <td>
                           <input
                             list="cluster-options"

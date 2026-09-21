@@ -338,7 +338,13 @@ def _czesci_i_klastry(wynik_pn: pd.DataFrame, rekordy: pd.DataFrame
                      if dp.PN_KOL in rekordy.columns else {})
     czesci = [{
         "pn": str(r["PN"]),
-        "description": str(r.get("MATDESC", ""))[:300],
+        # surowy opis zostaje (podpowiedz po najechaniu), ale domyslnie
+        # pokazujemy wersje bez numerow katalogowych i kodow wariantow
+        "description": dp.opis_czytelny(r.get("MATDESC", ""), r["PN"])[:220],
+        "description_raw": str(r.get("MATDESC", ""))[:300],
+        "weight_g": (round(float(r["waga_g"]), 2)
+                     if "waga_g" in wynik_pn.columns and pd.notna(r.get("waga_g"))
+                     else None),
         "cluster": str(r["cluster_name"]),
         "source": str(r["source"]),
         "confidence": round(float(r["confidence"]), 4),
@@ -381,6 +387,13 @@ def zapisz_json(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
     """Wynik trybu klasyfikujacego w formacie czytanym przez workflow-ui."""
     d = model.diagnostyka
     czesci, klastry = _czesci_i_klastry(wynik_pn, rekordy)
+    # Pokrycie liczone na TYM przebiegu. Diagnostyka modelu (udzial_przyjetych)
+    # mowi o danych treningowych, wiec kafelek "assigned automatically" pokazywal
+    # inna liczbe niz to, co uzytkownik przed chwila policzyl.
+    zrodla_biegu = wynik_pn["source"].value_counts()
+    auto_w_biegu = float(
+        (zrodla_biegu.get("model", 0) + zrodla_biegu.get("override", 0))
+        / max(len(wynik_pn), 1))
     return _zapisz_dane(out, {
         "mode": "classify",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -395,7 +408,8 @@ def zapisz_json(out: Path, wynik_pn: pd.DataFrame, rekordy: pd.DataFrame,
             "nmi": round(oof.get("nmi", 0.0), 4),
             "n_evaluated": int(oof.get("n_ocenianych", 0)),
             "confidence_threshold": round(d.prog_pewnosci, 4),
-            "auto_assigned_share": round(d.udzial_przyjetych, 4),
+            "auto_assigned_share": round(auto_w_biegu, 4),
+            "auto_assigned_share_validation": round(d.udzial_przyjetych, 4),
             "auto_assigned_accuracy": round(d.trafnosc_przyjetych, 4),
             "n_classes": d.n_klas,
             "accuracy_target": model.cfg.cel_trafnosci,

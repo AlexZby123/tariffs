@@ -529,8 +529,16 @@ textarea {
 .parts-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
   table-layout: fixed;
+  /* Tabela danych czyta sie duzo lepiej bezszeryfowo niz Georgia, ktora
+     rozjezdza sie na kodach czesci i skrotach pisanych wersalikami. */
+  font:
+    13px/1.45 ui-sans-serif,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    Arial,
+    sans-serif;
 }
 .parts-table th {
   position: sticky;
@@ -546,11 +554,12 @@ textarea {
   text-align: left;
 }
 .parts-table th:nth-child(1) { width: 13%; }
-.parts-table th:nth-child(2) { width: 27%; }
-.parts-table th:nth-child(3) { width: 20%; }
-.parts-table th:nth-child(4) { width: 12%; }
+.parts-table th:nth-child(2) { width: 33%; }
+.parts-table th:nth-child(3) { width: 8%; }
+.parts-table th:nth-child(4) { width: 23%; }
 .parts-table th:nth-child(5) { width: 8%; }
-.parts-table th:nth-child(6) { width: 20%; }
+.parts-table th:nth-child(6) { width: 15%; }
+.parts-table .do-prawej { text-align: right; }
 .parts-table td {
   padding: 7px 8px;
   border-top: 1px solid var(--line);
@@ -566,7 +575,7 @@ textarea {
   font: 11px var(--font-geist-mono), monospace;
   white-space: nowrap;
 }
-.parts-table .desc { color: #45534e; white-space: nowrap; }
+.parts-table .desc { color: #33423d; white-space: nowrap; }
 
 .badge {
   display: inline-flex;
@@ -715,7 +724,15 @@ textarea {
   font: 12px/1.45 Georgia, serif;
   color: var(--muted);
 }
-.badge.review { margin-left: 6px; background: #fbe6c8; color: #8a5a10; }
+/* zawsze w osobnej linii pod nazwa klastra - inaczej raz wchodzi w linie,
+   raz sie zawija i wiersze robia sie nierowne */
+.badge.review {
+  display: flex;
+  width: fit-content;
+  margin: 3px 0 0;
+  background: #fbe6c8;
+  color: #8a5a10;
+}
 
 /* wybor pliku wejsciowego - <label> udajacy przycisk, zeby input mogl byc ukryty */
 .jak-przycisk {
@@ -737,3 +754,21 @@ textarea {
   background: #ecf2ec;
   font: 11px var(--font-geist-mono), monospace;
 }
+
+/* pasek pewnosci - margines sam w sobie nic nie mowi, wiec pokazujemy go
+   wzgledem progu, przy ktorym model przestaje ufac sobie samemu */
+.pasek {
+  display: block;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: #e2e8e2;
+  overflow: hidden;
+}
+.pasek i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--teal);
+}
+.pasek i.slaby { background: #e0a23c; }
