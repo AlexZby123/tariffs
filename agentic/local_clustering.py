@@ -14,6 +14,28 @@ torow (w tej kolejnosci):
   WARSTWA 3  feedback: zapisz_override() dopisuje decyzje eksperta do
              overrides.yaml, kolejny fit() uczy sie juz na nich.
 
+Warstwa 1 i warstwa 2 odpowiadaja na DWA ROZNE pytania i dlatego sa dwoma
+roznymi mechanizmami, a nie jednym z progiem:
+
+  WARSTWA 1 pyta "ktorym ze ZNANYCH typow to jest?". Uczy sie z etykiet
+  eksperta, patrzy na kazda czesc OSOBNO i nigdy nie wymysli typu, ktorego nie
+  bylo w treningu - w najlepszym razie wybierze najblizszy istniejacy. Dlatego
+  potrzebuje progu: gdy dwa typy wychodza prawie tak samo dobre (maly margines),
+  to zwykle znak, ze wlasciwego typu w ogole nie ma na liscie.
+
+  WARSTWA 2 pyta "jakie grupy tworza te resztki?". Nie ma etykiet i nie ma
+  listy typow - laczy odrzucone czesci MIEDZY SOBA po podobienstwie, wiec moze
+  zaproponowac typ, ktorego nikt wczesniej nie nazwal (NEW_1, NEW_2...). Placi
+  za to tym, ze patrzy na caly batch naraz: wynik zalezy od tego, co jeszcze
+  jest w pliku.
+
+Rozne sa tez przestrzenie cech, bo rozne rzeczy sie w nich oplacaja:
+
+  warstwa 1  opis (0.70) + fraza typu (0.30); fizyka wylaczona - polowa
+             korpusu treningowego nie ma wagi, wiec wchodzi jako szum
+  warstwa 2  fraza typu (0.50) + opis (0.20) + fizyka (0.30); tu fizyka
+             pomaga mocno (ARI 0.650 -> 0.735), bo klastrowany plik wage ma
+
 Dlaczego tak, a nie "czysty cluster-then-label" z ARCHITEKTURA_LOKALNA.md
 (pomiary na to_cluster.csv, 962 PN z etykieta, 77 klas Rudolfa):
 
@@ -171,6 +193,39 @@ class KonfiguracjaHybrydy:
     min_licznosc_nowego: int = 2
     """Grupy mniejsze niz tyle PN dostaja etykiete DO_PRZEGLADU zamiast NOWY_n."""
 
+    w1_fraza: float = 0.30
+    w1_fizyka: float = 0.00
+    """WARSTWA 1: udzial frazy typu i cech fizycznych obok pelnego opisu.
+
+    Sam opis to za malo. Fraza typu (czlon SCND przed srednikiem) podaje typ
+    czesci wprost, zamiast kazac modelowi odkopywac go spod wymiarow i
+    wariantow. Zmierzone out-of-fold na pelnym zbiorze treningowym (2074 PN,
+    srednia i odchylenie z 4 ziaren):
+
+        sam opis                trafnosc 0.9614  ARI 0.9485  pokrycie 0.756
+        opis + fraza            trafnosc 0.9695  ARI 0.9580  pokrycie 0.797
+        opis + fraza + fiz 0.1  trafnosc 0.9685  ARI 0.9561  pokrycie 0.775
+        opis + fraza + fiz 0.2  trafnosc 0.9684  ARI 0.9544  pokrycie 0.737
+
+    Fizyka zostaje wylaczona (0.0), choc WARSTWIE 2 pomaga bardzo (ARI
+    0.650 -> 0.735). Powod jest w danych: dodatkowy korpus etykiet to same
+    pary PN + opis, bez wagi i objetosci, wiec ponad polowa zbioru
+    treningowego warstwy 1 dostaje fizyke wpisana z mediany. To nie jest
+    sygnal, tylko szum - i widac go w tabeli, bo szkodzi tym bardziej, im
+    wieksza dostaje wage. Mechanizm (SkalerFizyczny) zostaje: gdy korpus
+    zacznie nosic wage, wystarczy podniesc ten parametr i przemierzyc.
+
+    Sama waga frazy 0.30 to szczyt, nie strzal - przemiecione (3 ziarna):
+        0.20  trafnosc 0.9674  ARI 0.9567  pokrycie 0.824
+        0.30  trafnosc 0.9704  ARI 0.9605  pokrycie 0.816   <- tutaj
+        0.40  trafnosc 0.9687  ARI 0.9579  pokrycie 0.785
+        0.55  trafnosc 0.9669  ARI 0.9546  pokrycie 0.768
+
+    Czego NIE dokladamy: kodu HS i jednostki biznesowej. Zmierzone jako
+    neutralne - opisuja MATERIAL, a klaster to TYP FUNKCJONALNY, czyli inna
+    os. Gumowa uszczelka i gumowy o-ring dziela kod HS, a naleza do roznych
+    klastrow."""
+
     waga_fizyki: float = 0.30
     """WARSTWA 2: udzial cech fizycznych (waga/objetosc/wartosc na sztuke).
 
@@ -304,6 +359,8 @@ class HybrydowyKlasyfikator:
         self.cfg = cfg or KonfiguracjaHybrydy()
         self.enkoder: Optional[BaseEncoder] = None
         self.enkoder_bazowy: Optional[BaseEncoder] = None   # do WARSTWY 2
+        self.enkoder_frazy: Optional[BaseEncoder] = None    # fraza typu w WARSTWIE 1
+        self.skaler_fiz: Optional[dk.SkalerFizyczny] = None
         self.klasyfikator: Optional[LinearSVC] = None
         self.prog: float = 0.0
         self.klasy_: np.ndarray = np.array([])
@@ -350,9 +407,7 @@ class HybrydowyKlasyfikator:
         teksty = buduj_teksty(df_t, cfg.pola)
         if verbose:
             print(f"  [encoder] {cfg.encoder} on {len(teksty)} texts...")
-        self.enkoder = zbuduj_enkoder(cfg.encoder, seed=cfg.seed)
-        Z = (self.enkoder.fit_transform(teksty, y_t)
-             if self.enkoder.wymaga_etykiet else self.enkoder.fit_transform(teksty))
+        Z = self._cechy_w1(df_t, teksty, y_t, fit=True)
         # WARSTWA 2 zawsze na embeddingu bazowym - douczony gubi nowe typy
         self.enkoder_bazowy = (self.enkoder.base if isinstance(self.enkoder, SupConEncoder)
                                else self.enkoder)
@@ -437,7 +492,7 @@ class HybrydowyKlasyfikator:
 
         # --- WARSTWA 1 ---
         teksty = buduj_teksty(out.iloc[pozostale], cfg.pola)
-        Z = self.enkoder.transform(teksty)
+        Z = self._cechy_w1(out.iloc[pozostale], teksty, None, fit=False)
         marg = _margines(self.klasyfikator.decision_function(Z))
         pred = self.klasyfikator.predict(Z)
         pewne = marg >= self.prog
@@ -469,6 +524,49 @@ class HybrydowyKlasyfikator:
                       f"{len(kolejnosc)} proposed types "
                       f"({n_singli} of them a single part)")
         return self._zloz(out, nazwy, zrodla, pewnosc)
+
+    def _cechy_w1(self, df: pd.DataFrame, teksty: Sequence[str],
+                  y: Optional[np.ndarray], fit: bool) -> np.ndarray:
+        """Przestrzen cech WARSTWY 1: pelny opis + fraza typu + fizyka.
+
+        Sam opis gubi to, czego w opisie nie ma. Fraza typu wyciaga z MATDESC
+        goly typ czesci (czlon SCND przed srednikiem), wiec model nie musi go
+        odkrywac spod wymiarow i wariantow. Fizyka (waga/objetosc/wartosc na
+        sztuke) jest sygnalem niezaleznym od tekstu - rozdziela czesci, ktorych
+        opis brzmi tak samo. Wagi i pomiary: patrz KonfiguracjaHybrydy.w1_fraza.
+
+        Enkoder uczony na etykietach (+supcon) zostaje sam - on juz sciaga do
+        siebie czesci tej samej klasy, a doklejenia do niego nie mierzylismy.
+        """
+        cfg = self.cfg
+        if fit:
+            self.enkoder = zbuduj_enkoder(cfg.encoder, seed=cfg.seed)
+            Z_opis = (self.enkoder.fit_transform(teksty, y)
+                      if self.enkoder.wymaga_etykiet
+                      else self.enkoder.fit_transform(teksty))
+        else:
+            Z_opis = self.enkoder.transform(teksty)
+        if self.enkoder.wymaga_etykiet:
+            return Z_opis
+
+        w_fraza, w_fiz = cfg.w1_fraza, cfg.w1_fizyka
+        w_opis = max(0.0, 1.0 - w_fraza - w_fiz)
+        bloki = [Z_opis * w_opis]
+
+        if w_fraza > 0:
+            frazy = ([dk.fraza_typu(t) for t in df["MATDESC"].astype(str)]
+                     if "MATDESC" in df.columns else list(teksty))
+            if fit:
+                self.enkoder_frazy = zbuduj_enkoder("tfidf", svd_dim=120,
+                                                    random_state=cfg.seed).fit(frazy)
+            bloki.append(self.enkoder_frazy.transform(frazy) * w_fraza)
+
+        if w_fiz > 0:
+            if fit:
+                self.skaler_fiz = dk.SkalerFizyczny().fit(df)
+            bloki.append(self.skaler_fiz.transform(df) * w_fiz)
+
+        return np.hstack(bloki) if len(bloki) > 1 else bloki[0]
 
     def _cechy_odkrywcze(self, df: pd.DataFrame) -> np.ndarray:
         """Przestrzen dla WARSTWY 2: fraza typu + opis + cechy fizyczne.
@@ -517,6 +615,8 @@ class HybrydowyKlasyfikator:
         with open(path, "wb") as f:
             pickle.dump({"cfg": self.cfg, "enkoder": self.enkoder,
                          "enkoder_bazowy": self.enkoder_bazowy,
+                         "enkoder_frazy": self.enkoder_frazy,
+                         "skaler_fiz": self.skaler_fiz,
                          "klasyfikator": self.klasyfikator, "prog": self.prog,
                          "diagnostyka": lekka}, f)
         return path
@@ -527,6 +627,8 @@ class HybrydowyKlasyfikator:
             d = pickle.load(f)
         obj = cls(d["cfg"])
         obj.enkoder, obj.enkoder_bazowy = d["enkoder"], d["enkoder_bazowy"]
+        obj.enkoder_frazy = d.get("enkoder_frazy")
+        obj.skaler_fiz = d.get("skaler_fiz")
         obj.klasyfikator, obj.prog = d["klasyfikator"], d["prog"]
         obj.klasy_ = obj.klasyfikator.classes_
         obj.diagnostyka = d["diagnostyka"]

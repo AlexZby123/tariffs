@@ -567,6 +567,9 @@ def main() -> None:
     if maska.sum() < 20:
         raise SystemExit("  ERROR: too few labelled PN.")
 
+    # WARSTWY 1 i 2 pracuja w przestrzeni z cechami fizycznymi - musza byc w ramce
+    pn_df = pn_df.join(dk.cechy_fizyczne(rekordy), on="PN")
+
     # --- predict-only ---
     if args.predict_only:
         if not lc.MODEL_PATH.exists():
@@ -579,9 +582,6 @@ def main() -> None:
         zapisz_json(out, wynik_pn, rekordy, model, raport_oof_z_modelu(model), args)
         print(f"  Results -> {out.relative_to(KATALOG)}")
         return
-
-    # WARSTWA 2 pracuje w przestrzeni z cechami fizycznymi - musza byc w ramce
-    pn_df = pn_df.join(dk.cechy_fizyczne(rekordy), on="PN")
 
     df_tren = pn_df[maska].reset_index(drop=True)
     y_tren = y[maska]

@@ -135,6 +135,53 @@ def cechy_fizyczne(rekordy: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
+class SkalerFizyczny:
+    """Cechy fizyczne z ZAPAMIETANA skala - do uczenia na jednym zbiorze i
+    stosowania na innym.
+
+    _macierz_fizyczna skaluje kazde wywolanie osobno, co wystarcza warstwie 2
+    (klastruje jeden zbior naraz), ale nie warstwie 1, ktora uczy sie na
+    czesciach eksperta i przypisuje zupelnie inne. Tam skala musi byc ta sama
+    po obu stronach.
+    """
+
+    def __init__(self):
+        self.skaler: Optional[StandardScaler] = None
+        self.mediany: Optional[np.ndarray] = None
+
+    @staticmethod
+    def _log(pn_df: pd.DataFrame) -> Optional[np.ndarray]:
+        if any(k not in pn_df.columns for k in KOLUMNY_FIZYCZNE):
+            return None
+        X = np.column_stack([
+            np.log10(pn_df[k].astype(float).clip(lower=1e-4)) for k in KOLUMNY_FIZYCZNE
+        ])
+        X = np.where(np.isfinite(X), X, np.nan)
+        return None if np.isnan(X).all() else X
+
+    def fit(self, pn_df: pd.DataFrame) -> "SkalerFizyczny":
+        X = self._log(pn_df)
+        if X is None:
+            return self
+        self.mediany = np.nanmedian(X, axis=0)
+        self.skaler = StandardScaler().fit(np.where(np.isnan(X), self.mediany, X))
+        return self
+
+    @property
+    def szerokosc(self) -> int:
+        """Ile kolumn zwraca transform() - 1, gdy fit nie znalazl fizyki."""
+        return len(KOLUMNY_FIZYCZNE) if self.skaler is not None else 1
+
+    def transform(self, pn_df: pd.DataFrame) -> np.ndarray:
+        X = self._log(pn_df)
+        if X is None or self.skaler is None:
+            # Szerokosc musi zgadzac sie z ta z fit() - inaczej klasyfikator
+            # dostanie wektory innego wymiaru niz te, na ktorych sie uczyl.
+            return np.zeros((len(pn_df), self.szerokosc), dtype=np.float32)
+        X = np.where(np.isnan(X), self.mediany, X)
+        return normalize(self.skaler.transform(X)).astype(np.float32)
+
+
 def _macierz_fizyczna(pn_df: pd.DataFrame) -> np.ndarray:
     """Cechy fizyczne w skali logarytmicznej, ustandaryzowane i znormalizowane.
 

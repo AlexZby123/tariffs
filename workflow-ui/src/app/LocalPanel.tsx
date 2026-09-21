@@ -698,8 +698,8 @@ export default function LocalPanel() {
             <p>
               <b>Used to place this part:</b>{" "}
               {podglad.part.needs_review
-                ? "the description, the type phrase above, and weight, volume and value per piece."
-                : "the material description only."}
+                ? "the description, the type phrase above, and weight, volume and value per piece — compared against the other parts left over in this file."
+                : "the description and the type phrase above — compared against the parts your expert already labelled."}
             </p>
             <p>
               <b>Sent to the cloud model:</b>{" "}
