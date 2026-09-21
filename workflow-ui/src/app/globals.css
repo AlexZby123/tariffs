@@ -716,3 +716,24 @@ textarea {
   color: var(--muted);
 }
 .badge.review { margin-left: 6px; background: #fbe6c8; color: #8a5a10; }
+
+/* wybor pliku wejsciowego - <label> udajacy przycisk, zeby input mogl byc ukryty */
+.jak-przycisk {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 7px 14px;
+  border: 1px solid #aebbb4;
+  border-radius: 9px;
+  color: #24443c;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.jak-przycisk:hover { background: #ecf2ec; }
+.apikey-row code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #ecf2ec;
+  font: 11px var(--font-geist-mono), monospace;
+}

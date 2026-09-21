@@ -467,6 +467,10 @@ def parse_args() -> argparse.Namespace:
                    help="tryb discover, grupowanie local: docelowa liczba typow")
     p.add_argument("--encoder", default="tfidf",
                    help="tfidf | minilm | bge | st:<model>, opcjonalnie +supcon")
+    p.add_argument("--plik", default=None, metavar="SCIEZKA",
+                   help="plik z czesciami DO POKLASTROWANIA (.csv / .xlsx). Model uczy "
+                        "sie na czesciach juz opisanych, a ten plik tylko przypisuje - "
+                        "nie musi miec zadnych etykiet.")
     p.add_argument("--dataset", default="to_cluster", choices=list(dp.ZRODLA))
     p.add_argument("--limit", type=int, default=None, help="ogranicz do N PN (test)")
     p.add_argument("--rows", type=int, default=None, help="ogranicz do N wierszy zrodla")
@@ -610,16 +614,29 @@ def main() -> None:
         else:
             print("  (not enough data for a meaningful simulation)")
 
+    # Plik wskazany przez uzytkownika zastepuje dane DO PRZYPISANIA, ale nie
+    # dane treningowe - model zostaje ten, ktory wyuczyl sie na czesciach juz
+    # opisanych przez eksperta.
+    rekordy_wyj, pn_wyj, rudolf_wyj = rekordy, pn_df, rudolf
+    if args.plik:
+        print(f"\n[3b] Loading parts to cluster from {Path(args.plik).name}...")
+        rekordy_wyj = dp.wczytaj_plik_wejsciowy(Path(args.plik))
+        pn_wyj = dp.deduplikuj_do_pn(rekordy_wyj).join(
+            dk.cechy_fizyczne(rekordy_wyj), on="PN")
+        rudolf_wyj = pd.Series(dtype=str)  # brak etykiet -> brak ewaluacji
+        print(f"  rows={len(rekordy_wyj)}  PN={len(pn_wyj)}")
+
     print("\n[4] Assigning all PN + saving...")
-    wynik_pn = model.predict(pn_df)
+    wynik_pn = model.predict(pn_wyj)
     wynik_pn = nazwij_odkryte(model, wynik_pn, args.nazywaj)
     rozklad = wynik_pn["source"].value_counts().to_dict()
     print(f"  assignment sources: {rozklad}")
     print(f"  clusters in total: {wynik_pn['cluster_name'].nunique()}")
 
-    out = WYNIKI_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_local_{cfg.encoder.replace(':', '-')}"
-    met_wiersze = zapisz_wyniki(out, wynik_pn, rekordy, rudolf)
-    zapisz_json(out, wynik_pn, rekordy, model, oof, args, sim)
+    znacznik = Path(args.plik).stem[:24] if args.plik else cfg.encoder.replace(":", "-")
+    out = WYNIKI_DIR / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_local_{znacznik}"
+    met_wiersze = zapisz_wyniki(out, wynik_pn, rekordy_wyj, rudolf_wyj)
+    zapisz_json(out, wynik_pn, rekordy_wyj, model, oof, args, sim)
     model.zapisz()
 
     zapisz_podsumowanie(out / "podsumowanie.txt", cfg, model, oof, tabela, sim,

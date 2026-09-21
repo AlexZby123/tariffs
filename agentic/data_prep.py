@@ -170,6 +170,85 @@ def wczytaj_etykiety_rudolfa() -> pd.Series:
     return r["Cluster NAME"].astype(str).str.strip()
 
 
+#: Kolumny, ktorych pipeline dotyka po wczytaniu. Brakujace zakladamy puste -
+#: bez nich dziala, tylko slabiej (np. bez wagi nie ma cech fizycznych).
+KOLUMNY_OPCJONALNE = [
+    "MAT_LANE_YM", "HS Code First 6 ACDC", "HS Code First 6 Text ACDC",
+    "HS Code Text ACDC", "BU SCND", "PRDH_ProductSubclassDescription",
+    "PRDH_StatisticGroupDescription", "PDCL_Desc_SCND",
+    "Brutto Weight Material MARA", "Weight UoM", "Sum_Quantity_SCND",
+    "Sum_Volume_cbm_SCND", "Value_Per_Piece_SCND",
+]
+
+#: Proby wczytania CSV: rozne separatory i kodowania spotykane w eksportach.
+WARIANTY_CSV = [
+    {"sep": ";", "encoding": "cp1252"},
+    {"sep": ";", "encoding": "utf-8-sig"},
+    {"sep": ",", "encoding": "utf-8-sig"},
+    {"sep": "\t", "encoding": "utf-8-sig"},
+]
+
+
+def wczytaj_plik_wejsciowy(sciezka: Path) -> pd.DataFrame:
+    """Wczytuje DOWOLNY plik z czesciami do poklastrowania (.csv / .xlsx).
+
+    Wymaga tylko numeru czesci i choc jednego opisu materialowego - cala reszta
+    kolumn jest opcjonalna i zakladana pusta, zeby plik z innego eksportu nie
+    wywracal calego przebiegu. Etykiety NIE sa potrzebne: to plik do
+    poklastrowania, a nie do uczenia.
+    """
+    sciezka = Path(sciezka)
+    if not sciezka.exists():
+        raise FileNotFoundError(f"Nie ma pliku: {sciezka}")
+
+    if sciezka.suffix.lower() in (".xlsx", ".xlsm", ".xls"):
+        df = pd.read_excel(sciezka, sheet_name=0, dtype=str)
+    else:
+        df, awaryjny = None, None
+        for wariant in WARIANTY_CSV:
+            try:
+                kand = pd.read_csv(sciezka, dtype=str, low_memory=False, **wariant)
+            except (UnicodeDecodeError, pd.errors.ParserError):
+                continue
+            awaryjny = awaryjny if awaryjny is not None else kand
+            # jedna kolumna = najpewniej zly separator, probujemy dalej
+            if kand.shape[1] > 1:
+                df = kand
+                break
+        # Zaden wariant nie dal wielu kolumn: bierzemy pierwszy, ktory sie
+        # sparsowal. Dzieki temu sprawdzenie kolumn nizej powie, CZEGO brakuje,
+        # zamiast zwracac mylace "nie udalo sie wczytac".
+        df = df if df is not None else awaryjny
+        if df is None:
+            raise ValueError(
+                f"Nie udalo sie wczytac {sciezka.name}. Obslugiwane: .xlsx albo CSV "
+                f"z separatorem ';', ',' lub tabulatorem."
+            )
+
+    df.columns = df.columns.str.strip()
+    if PN_KOL not in df.columns:
+        raise ValueError(
+            f"Plik {sciezka.name} nie ma kolumny '{PN_KOL}'. "
+            f"Znalezione kolumny: {list(df.columns)[:10]}"
+        )
+    opisy = [k for k in ("Material Description ACDC", "Material Description SCND")
+             if k in df.columns]
+    if not opisy:
+        raise ValueError(
+            f"Plik {sciezka.name} nie ma zadnej kolumny z opisem materialowym "
+            f"('Material Description ACDC' albo 'Material Description SCND')."
+        )
+
+    df["MATDESC"] = _fillna(df[opisy[0]])
+    if len(opisy) == 2:
+        df["MATDESC"] = (df["MATDESC"] + " | " + _fillna(df[opisy[1]])).str.strip(" |")
+
+    for kol in KOLUMNY_OPCJONALNE + CAPRI_KOLS + ["DESCPLUS"]:
+        if kol not in df.columns:
+            df[kol] = ""
+    return df.reset_index(drop=True)
+
+
 #: Dodatkowy korpus Rudolfa: etykiety w tym samym pliku (kolumna Cluster NAME).
 #: 1615 PN / 106 klas, z czego 1112 PN i ~36 nazw klastrow nie wystepuje w
 #: to_cluster.csv. cla 1.xlsx i cla_weryfikacja.xlsx maja identyczna zawartosc.

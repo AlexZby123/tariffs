@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  FileUp,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -73,6 +74,8 @@ export default function LocalPanel() {
   const mode = "classify" as const;
   const grouping = "cloud" as const;
   const physicsWeight = 0.3;
+  const [inputFile, setInputFile] = useState<{ path: string; name: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [accuracyTarget, setAccuracyTarget] = useState(0.999);
   const [discoveryThreshold, setDiscoveryThreshold] = useState(0.6);
@@ -84,6 +87,7 @@ export default function LocalPanel() {
   const [pending, setPending] = useState<Record<string, string>>({});
 
   const runOptions = {
+    inputFile: inputFile?.path ?? null,
     mode,
     grouping,
     physicsWeight,
@@ -123,6 +127,20 @@ export default function LocalPanel() {
     if (!response.ok) return setNotice(body.error ?? "Could not start the run.");
     setRun(body);
     setNotice("Clustering started.");
+  };
+
+  const wgrajPlik = async (pliki: FileList | null) => {
+    const plik = pliki?.[0];
+    if (!plik) return;
+    setUploading(true);
+    const dane = new FormData();
+    dane.append("file", plik);
+    const response = await fetch("/api/local/upload", { method: "POST", body: dane });
+    const body = await response.json();
+    setUploading(false);
+    if (!response.ok) return setNotice(body.error ?? "Upload failed.");
+    setInputFile({ path: body.path, name: body.name });
+    setNotice(`${body.name} uploaded. Run the clustering to assign its parts.`);
   };
 
   const storeApiKey = async () => {
@@ -223,6 +241,39 @@ export default function LocalPanel() {
             in your review queue. Every correction you make there is folded back
             into training.
           </p>
+        </div>
+
+        <div className="apikey-row">
+          <FileUp size={16} />
+          {inputFile ? (
+            <>
+              <span>
+                Clustering <b>{inputFile.name}</b> — the model stays trained on
+                the parts your experts already described.
+              </span>
+              <button className="link" onClick={() => setInputFile(null)}>
+                use the default dataset
+              </button>
+            </>
+          ) : (
+            <>
+              <span>Using the built-in dataset.</span>
+              <label className="secondary jak-przycisk">
+                {uploading ? "Uploading…" : "Choose a file…"}
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xls,.xlsm,.txt"
+                  hidden
+                  onChange={(event) => wgrajPlik(event.target.files)}
+                />
+              </label>
+              <span className="hint">
+                A .csv or .xlsx with your parts. It needs a
+                <code> Product Number ACDC </code> column and at least one
+                <code> Material Description </code> column — no labels required.
+              </span>
+            </>
+          )}
         </div>
 
         <div className="apikey-row">

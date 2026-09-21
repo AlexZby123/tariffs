@@ -52,6 +52,8 @@ export type LocalResult = {
 };
 
 export type LocalRunOptions = {
+  /** Plik do poklastrowania; null = domyslny zbior z data_to_cluster/. */
+  inputFile: string | null;
   mode: "discover" | "classify";
   grouping: "cloud" | "local";
   physicsWeight: number;
@@ -229,6 +231,7 @@ export function startLocalRun(options: LocalRunOptions) {
       String(options.discoveryThreshold),
     );
   }
+  if (options.inputFile) args.push("--plik", options.inputFile);
   if (options.limit) args.push("--limit", String(options.limit));
   runPython(args, `local clustering (${options.mode})`);
 }

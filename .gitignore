@@ -13,6 +13,8 @@ venv/
 agentic/config.yaml
 agentic/cache/
 agentic/wyniki/
+# pliki wgrane przez UI do poklastrowania
+agentic/dane_wejsciowe/
 agentic/models/
 search_agent/cache/
 

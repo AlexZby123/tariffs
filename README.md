@@ -174,6 +174,14 @@ zapytanie na cały bieg**, więc może działać przy każdym klastrowaniu. Gdy 
 albo endpoint nie odpowie, bieg **nie przerywa się** — grupy dostają nazwy offline'ową
 heurystyką, a w logu pojawia się informacja dlaczego.
 
+**Wrzucanie własnego pliku.** W zakładce jest przycisk „Choose a file…" — wskazujesz `.csv`
+albo `.xlsx` z częściami do poklastrowania. Plik potrzebuje kolumny `Product Number ACDC`
+i co najmniej jednej kolumny `Material Description` — **żadnych etykiet**. Model zostaje
+wyuczony na częściach, które ekspert już opisał, a wgrany plik tylko przypisuje. Wgrane
+pliki lądują w `agentic/dane_wejsciowe/` (poza repo).
+
+Z CLI to samo: `python run_local.py --plik sciezka/do/pliku.xlsx`
+
 Tor lokalny **nie wymaga `config.yaml`** — zakładka działa od razu po `npm run dev`.
 
 W tabeli części każdy wiersz ma pole **„Pin permanently"** — wybierasz istniejący klaster

@@ -41,6 +41,23 @@ wpadać do worka `NEEDS_REVIEW` dostaje własną nazwę z frazy typu (`NEW: WIRE
 Niepewność to osobna flaga `needs_review`, nie brak odpowiedzi. Ekspert w kolejce widzi
 propozycję do zaakceptowania, a nie pustkę.
 
+### Wrzucanie własnego pliku
+
+`run_local.py --plik <sciezka>` (w UI: „Choose a file…") rozdziela dwie rzeczy, które
+wcześniej były tym samym zbiorem:
+
+- **dane treningowe** — części już opisane przez eksperta, bez zmian,
+- **dane do przypisania** — wskazany plik, bez żadnych etykiet.
+
+Czytnik `wczytaj_plik_wejsciowy` jest tolerancyjny: `.xlsx` albo CSV z separatorem `;`,
+`,` lub tabulatorem, w cp1252 lub UTF-8. Wymaga tylko `Product Number ACDC` i choć jednej
+kolumny `Material Description` — pozostałe są opcjonalne i zakładane puste, żeby eksport
+z innego systemu nie wywracał przebiegu. Bez kolumn wagi/objętości warstwa 2 działa dalej,
+tylko bez cech fizycznych.
+
+Przy wskazanym pliku ewaluacja względem Rudolfa jest pomijana — nie ma się do czego
+porównać. Metryki OOF w nagłówku nadal opisują model, bo dotyczą danych treningowych.
+
 ### Tryb `discover` — tylko na zimny start
 
 Zbiór, dla którego **nikt nic nie opisał**, nie ma na czym uczyć warstwy 1. Wtedy
