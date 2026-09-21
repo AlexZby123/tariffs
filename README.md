@@ -189,11 +189,17 @@ albo wpisujesz nowy, korekty zbierają się w koszyku, a **„Save and retrain"*
 do `overrides.yaml` i od razu przelicza model. Część przypięta przez eksperta zawsze wchodzi
 do treningu, więc podobne części idą za Twoją decyzją.
 
-> [!NOTE]
-> Na Windows z condą ustaw `PYTHON_EXECUTABLE` na interpreter swojego środowiska, np.
-> `set PYTHON_EXECUTABLE=C:\Users\ZBA1WZ\.conda\envs\vm\python.exe` przed `npm run dev`
-> (albo na stałe w pliku `workflow-ui\.env.local`). Bez tego UI sięga po Anacondę base.
-> Którego interpretera używa, widać w pierwszej linii logu po uruchomieniu.
+> [!IMPORTANT]
+> **Ustaw `PYTHON_EXECUTABLE` na stałe**, tworząc plik `workflow-ui\.env.local` z jedną linią:
+> ```
+> PYTHON_EXECUTABLE=C:\Users\ZBA1WZ\.conda\envs\vm\python.exe
+> ```
+> `set PYTHON_EXECUTABLE=...` w cmd działa **tylko w tym jednym oknie** — po otwarciu
+> nowego terminala (np. na `npm run build` i `npm start`) zmienna znika.
+>
+> Bez tej zmiennej UI sam szuka interpretera, który ma komplet pakietów, a jeśli żadnego
+> nie znajdzie — mówi o tym wprost, zamiast pozwolić przebiegowi paść na
+> `ModuleNotFoundError`. Którego interpretera używa, widać w pierwszej linii logu.
 
 > Pełny opis architektury, wszystkie pomiary i uzasadnienie decyzji projektowych (m.in.
 > dlaczego sieć neuronowa **nie** jest domyślnym enkoderem i dlaczego do modelu idzie

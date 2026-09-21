@@ -1,23 +1,72 @@
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import fs from "fs/promises";
-import fsSync from "fs";
 import path from "path";
 import { load, dump } from "js-yaml";
 
 export const agenticDir = path.resolve(process.cwd(), "..", "agentic");
 const configPath = path.join(agenticDir, "config.yaml");
-const anacondaPython = "C:\\Program Files\\Anaconda3\\python.exe";
 
+/** Pakiety, bez ktorych run_local.py nie wystartuje. */
+const WYMAGANE_MODULY = ["pandas", "numpy", "sklearn", "scipy", "yaml"];
+
+/** Czy ten interpreter ma komplet wymaganych pakietow (szybki, ~100 ms). */
+function maWymaganePakiety(python: string): boolean {
+  try {
+    const wynik = spawnSync(python, ["-c", `import ${WYMAGANE_MODULY.join(", ")}`], {
+      windowsHide: true,
+      timeout: 20000,
+    });
+    return wynik.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+let zapamietany: string | null = null;
+
+/**
+ * Interpreter, ktorym uruchamiamy run_local.py.
+ *
+ * PYTHON_EXECUTABLE ma pierwszenstwo ZAWSZE, nawet gdy jest zepsuty - to
+ * swiadomy wybor uzytkownika i lepiej o nim powiedziec niz go po cichu
+ * obchodzic (od tego jest opiszProblemZPythonem).
+ *
+ * Bez tej zmiennej NIE bierzemy pierwszego lepszego. Wczesniej kod na Windows
+ * wpadal na sztywno w Anaconde base, ktora nie ma pandas - uzytkownik dostawal
+ * goly ModuleNotFoundError i nie wiedzial, ze uruchomil nie to srodowisko.
+ * Teraz sprawdzamy kandydatow i bierzemy pierwszego, ktory ma komplet pakietow.
+ */
 export function resolvePythonCommand(): string {
   if (process.env.PYTHON_EXECUTABLE) return process.env.PYTHON_EXECUTABLE;
-  if (process.platform === "win32" && fsSync.existsSync(anacondaPython))
-    return anacondaPython;
-  if (process.platform !== "win32") {
-    // na wielu Linuksach/macOS istnieje tylko 'python3'
-    for (const kandydat of ["/usr/local/bin/python3", "/usr/bin/python3"])
-      if (fsSync.existsSync(kandydat)) return kandydat;
-  }
-  return "python";
+  if (zapamietany) return zapamietany;
+
+  const kandydaci =
+    process.platform === "win32"
+      ? ["python", "py", "C:\\Program Files\\Anaconda3\\python.exe"]
+      : ["/usr/local/bin/python3", "/usr/bin/python3", "python3", "python"];
+
+  zapamietany = kandydaci.find(maWymaganePakiety) ?? kandydaci[0];
+  return zapamietany;
+}
+
+/**
+ * Sprawdza interpreter PRZED uruchomieniem dlugiego zadania.
+ * Zwraca komunikat do pokazania uzytkownikowi albo null, gdy wszystko gra.
+ */
+export function opiszProblemZPythonem(python: string): string | null {
+  if (maWymaganePakiety(python)) return null;
+  const zmienna = process.env.PYTHON_EXECUTABLE
+    ? `PYTHON_EXECUTABLE points at "${python}".`
+    : `PYTHON_EXECUTABLE is not set, so "${python}" was picked automatically.`;
+  return [
+    `Python at "${python}" is missing some of: ${WYMAGANE_MODULY.join(", ")}.`,
+    zmienna,
+    "Point it at the environment that has them, for example by creating",
+    "workflow-ui/.env.local with a single line:",
+    "    PYTHON_EXECUTABLE=C:\\Users\\<you>\\.conda\\envs\\<env>\\python.exe",
+    "then restart the server. To check an interpreter, run in agentic/:",
+    '    "<path to python.exe>" sprawdz_srodowisko.py',
+  ].join("\n");
 }
 
 export type WorkflowConfig = {

@@ -9,7 +9,11 @@ import { spawn } from "child_process";
 import fs from "fs/promises";
 import path from "path";
 import { dump, load } from "js-yaml";
-import { agenticDir, resolvePythonCommand } from "./workflow";
+import {
+  agenticDir,
+  opiszProblemZPythonem,
+  resolvePythonCommand,
+} from "./workflow";
 
 const wynikPath = path.join(agenticDir, "wyniki", "_ostatni_lokalny.json");
 const overridesPath = path.join(agenticDir, "overrides.yaml");
@@ -178,6 +182,21 @@ function runPython(args: string[], label: string) {
   if (localRunState.state === "running")
     throw new Error("Tor lokalny jest juz uruchomiony.");
   const python = resolvePythonCommand();
+
+  // Lepiej powiedziec wprost, ze interpreter jest zly, niz pozwolic uzytkownikowi
+  // czekac na przebieg, ktory i tak skonczy sie golym ModuleNotFoundError.
+  const problem = opiszProblemZPythonem(python);
+  if (problem) {
+    localRunState = {
+      state: "failed",
+      output: [`> ${python} ${args.join(" ")}`, "", ...problem.split("\n")],
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      exitCode: null,
+    };
+    return;
+  }
+
   localRunState = {
     state: "running",
     output: [`> ${python} ${args.join(" ")}`, `# ${label}`],
