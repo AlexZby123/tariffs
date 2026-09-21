@@ -426,61 +426,32 @@ export default function LocalPanel() {
 
       {result && (
         <section className="metrics">
-          {result.mode === "discover" ? (
-            <>
-              <div className="metric">
-                <b>{(result.metrics?.ari ?? 0).toFixed(3)}</b>
-                <span>ARI — same measure as cloud (0.885)</span>
-              </div>
-              <div className="metric">
-                <b>{(result.metrics?.ari_confident_only ?? 0).toFixed(3)}</b>
-                <span>ARI on confident parts only</span>
-              </div>
-              <div className="metric">
-                <b>{result.metrics?.n_classes}</b>
-                <span>part types discovered</span>
-              </div>
-              <div className="metric">
-                <b>{result.metrics?.phrases_grouped_by_llm || 0}</b>
-                <span>phrases grouped by cloud</span>
-              </div>
-              <div className="metric warn">
-                <b>{reviewCount}</b>
-                <span>parts to review</span>
-              </div>
-              <div className="metric">
-                <b>{result.metrics?.llm_requests ?? 0}</b>
-                <span>cloud requests used</span>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="metric">
-                <b>{pct(result.metrics?.oof_accuracy)}</b>
-                <span>accuracy (out-of-fold)</span>
-              </div>
-              <div className="metric">
-                <b>{(result.metrics?.ari ?? 0).toFixed(3)}</b>
-                <span>ARI — cloud agents get 0.885</span>
-              </div>
-              <div className="metric">
-                <b>{pct(result.metrics?.auto_assigned_share)}</b>
-                <span>assigned automatically</span>
-              </div>
-              <div className="metric">
-                <b>{pct(result.metrics?.auto_assigned_accuracy)}</b>
-                <span>accuracy of those</span>
-              </div>
-              <div className="metric warn">
-                <b>{reviewCount}</b>
-                <span>parts to review</span>
-              </div>
-              <div className="metric">
-                <b>{(result.clusters ?? []).length}</b>
-                <span>clusters ({result.metrics?.n_classes ?? 0} known)</span>
-              </div>
-            </>
-          )}
+          {/* Tylko liczby, na ktore uzytkownik reaguje. Miary jakosci modelu
+              (ARI, trafnosc out-of-fold, porownanie z torem chmurowym) zostaja
+              w logu i w pliku wynikowym - na ekranie byly zargonem. */}
+          <div className="metric">
+            <b>{(result.parts ?? []).length}</b>
+            <span>parts clustered</span>
+          </div>
+          <div className="metric">
+            <b>{pct(result.metrics?.auto_assigned_share)}</b>
+            <span>assigned automatically</span>
+          </div>
+          <div
+            className="metric"
+            title="Measured in cross-validation on the parts your experts already described."
+          >
+            <b>{pct(result.metrics?.auto_assigned_accuracy)}</b>
+            <span>correct among those</span>
+          </div>
+          <div className="metric warn">
+            <b>{reviewCount}</b>
+            <span>need your review</span>
+          </div>
+          <div className="metric">
+            <b>{(result.clusters ?? []).length}</b>
+            <span>part types</span>
+          </div>
         </section>
       )}
 
